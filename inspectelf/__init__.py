@@ -55,9 +55,7 @@ def get_segments(e, name):
 
 	return s
 
-def inspect(elffile, sysroot = "/", recursive = False, LIBRARIES = {}):
-	global WORK_ARCH
-
+def inspect(elffile, sysroot = "/", recursive = False, LIBRARIES = {}, WORK_ARCH = None):
 	if elffile in LIBRARIES:
 		return
 
@@ -135,7 +133,7 @@ def inspect(elffile, sysroot = "/", recursive = False, LIBRARIES = {}):
 					p = dedouble(path.sep.join((rpath, library)), '/')
 
 					if path.exists(p):
-						inspect(p, sysroot, recursive, LIBRARIES)
+						inspect(p, sysroot, recursive, LIBRARIES, WORK_ARCH)
 						# Continue looking for other candidates as we might be confusing
 						# host libraries with actual sysroot ones
 						break
