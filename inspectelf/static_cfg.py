@@ -170,7 +170,7 @@ def exported_functions(elf, ARCH, MODE):
 		if symbol.entry.st_value == 0 or len(symbol.name) == 0:
 			continue
 
-		print "=" * 32 + " " + symbol.name + " " + "=" * 32
+		# print "=" * 32 + " " + symbol.name + " " + "=" * 32
 
 		root_bb = disasm_bb(data, symbol.entry.st_value)
 
@@ -185,6 +185,6 @@ def exported_functions(elf, ARCH, MODE):
 		for crc in crcs:
 			# Set the bit offset (truncated to hash size)
 			idx = crc % (BLOOM_FILTER_SIZE * 8)
-			bloomfilter[idx / 8] |= (1 << (idx % 8))
+			bloomfilter[idx >> 3] |= (1 << (idx & 0b111))
 
 	return bloomfilter

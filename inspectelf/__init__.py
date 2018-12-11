@@ -2,10 +2,12 @@
 
 import argparse
 import pprint
-from os import path
+from os import path, mkdir, listdir
 from elftools.elf.elffile import ELFFile
 from capstone import *
 from static_cfg import *
+from binascii import hexlify
+import json
 
 def dedouble(s, c):
 	now = s.replace(c * 2, c)
@@ -26,8 +28,8 @@ def x64_parse(e, options = None):
 			MECHANISMS["STACK_CANARIES"] = True
 			break
 	if options is not None:
-		if "CFG" in options:
-			exported_functions(e, CS_ARCH_X86, CS_MODE_64)
+		if "CFG" in options and options["CFG"]:
+			MECHANISMS["CFG_FILTER"] = exported_functions(e, CS_ARCH_X86, CS_MODE_64)
 
 	return MECHANISMS
 
@@ -112,7 +114,56 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, LIBRARIES = 
 
 		# Figure out ELF Arch
 		if e.header.e_machine in ARCHS and ARCHS[e.header.e_machine]["PARSE"] is not None:
+			# Create a DB
+			if not path.exists("db/"):
+				mkdir("db/")
+
+			# Check if this was already indexed
+			if path.exists("db/%s.bloomfilter" % path.basename(elffile)):
+				cfg = False
+				with open("db/%s.bloomfilter" % path.basename(elffile), "rb") as fp:
+					bloom_bits = json.load(fp)["BLOOM"]
+
 			m = ARCHS[e.header.e_machine]["PARSE"](e, {"CFG": cfg})
+
+			if "CFG_FILTER" in m or bloom_bits is not None:
+				# We might already get this library from store
+				if "CFG_FILTER" in m:
+					f = m["CFG_FILTER"]
+					del m["CFG_FILTER"]
+
+					bloom_bits = [1 if ((f[i >> 3] & (1 << (i & 0b111))) != 0) else 0 for i in xrange(len(f) * 8)]
+				total_bits = len(filter(lambda x: x == 1, bloom_bits))
+
+				highest_match = {"PERCENTAGE": 0, "ELF-FILENAME": ""}
+
+				# Iterate over all existing filters and find the one matching most
+				for filename in listdir("db/"):
+					with open("db/%s" % filename, "rb") as fp:
+
+						# Load other bloom filter
+						otherbloom = json.load(fp)
+
+						hits = 0
+						for i in xrange(len(bloom_bits)):
+							if bloom_bits[i] == 1 and otherbloom["BLOOM"][i] == 1:
+								hits += 1
+
+						# Calculate matching percentage
+						match = float(hits) / total_bits
+
+						if match > highest_match["PERCENTAGE"]:
+							highest_match["PERCENTAGE"] = match
+							highest_match["ELF-FILENAME"] = otherbloom["ELF-FILENAME"]
+
+				print "Best match: %s Match: %f" % (highest_match["ELF-FILENAME"], highest_match["PERCENTAGE"])
+				MECHANISMS["BEST-MATCH"] = highest_match["ELF-FILENAME"]
+				MECHANISMS["BEST-MATCH-PERCENTAGE"] = highest_match["PERCENTAGE"]
+
+				# Write bloom filter to file in DB
+				with open("db/%s.bloomfilter" % path.basename(elffile), "wb") as fp:
+					json.dump({"ELF-FILENAME": path.basename(elffile), "BLOOM": bloom_bits}, fp)
+				# print bits
 
 			# Arch dependent checks
 			for k in m.keys():
