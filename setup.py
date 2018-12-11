@@ -8,4 +8,5 @@ setup(name='inspectelf',
       author_email='',
       license='',
       packages=['inspectelf'],
+      install_requires=['capstone'],
       zip_safe=False)
