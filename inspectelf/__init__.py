@@ -7,6 +7,7 @@ from os import path, mkdir, listdir
 from elftools.elf.elffile import ELFFile
 from capstone import *
 from static_cfg import *
+from string_cmp import *
 from binascii import hexlify
 import json
 
@@ -67,7 +68,7 @@ def get_segments(e, name):
 
 	return s
 
-def get_similar(elffile, digest, bloomfilter):
+def get_similar_cfg(elffile, digest, bloomfilter):
 	highest_match = {"PERCENTAGE": 0, "ELF-FILENAME": ""}
 	matches = []
 	MECHANISMS = {}
@@ -107,12 +108,12 @@ def get_similar(elffile, digest, bloomfilter):
 	MECHANISMS["BEST-MATCH-PERCENTAGE"] = highest_match["PERCENTAGE"]
 
 	# Write bloom filter to file in DB
-	with open("db/%s.bloomfilter" % path.basename(elffile), "wb") as fp:
+	with open("db/%s.json" % path.basename(elffile), "wb") as fp:
 		json.dump({"ELF-HASH": digest, "ELF-FILENAME": path.basename(elffile), "BLOOM": bloomfilter}, fp)
 
 	return MECHANISMS
 
-def inspect(elffile, sysroot = "/", recursive = False, cfg = False, LIBRARIES = {}, WORK_ARCH = None):
+def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = False, LIBRARIES = {}, WORK_ARCH = None):
 	if elffile in LIBRARIES:
 		return
 
@@ -126,6 +127,10 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, LIBRARIES = 
 			return
 
 		print "Inspecting %s" % elffile
+
+		# Create a DB if does not exist
+		if not path.exists("db/"):
+			mkdir("db/")
 
 		MECHANISMS = {
 					"PIE": False,
@@ -141,6 +146,21 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, LIBRARIES = 
 		with open(elffile, "rb") as f:
 			sha256.update(f.read())
 			digest = sha256.digest().encode("HEX")
+
+		# Try reading from DB
+		if path.exists("db/%s.json" % path.basename(elffile)):
+			with open("db/%s.json" % path.basename(elffile), "rb") as fp:
+				record = json.load(fp)
+				if digest == record["ELF-HASH"]:
+					if not force:
+						# Remember to delete BLOOM
+						if "BLOOM" in record:
+							del record["BLOOM"]
+						return record
+					else:
+						# If this is forced, reanalyze everything
+						# but have this record here just in case (Hint: For CFG Analysis)
+						MECHANISMS = record
 
 		# Check for PIE
 		text = get_section(e, ".text")
@@ -169,19 +189,18 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, LIBRARIES = 
 			if symbol.name.startswith("__") and symbol.name.endswith("_chk"):
 				MECHANISMS["FORTIFY_SOURCE"] = True
 
+		strings = string_scan(elffile)
+
+		MECHANISMS["ELF-STRINGS"] = "\n".join([ "\n".join(strings[k]) for k in strings ])
+
 		# Figure out ELF Arch
 		if e.header.e_machine in ARCHS and ARCHS[e.header.e_machine]["PARSE"] is not None:
-			# Create a DB
-			if not path.exists("db/"):
-				mkdir("db/")
+			if "BLOOM" in MECHANISMS:
+				# Don't run CFG again as it's suuuuuper resource heavy
+				cfg = False
 
-			# Check if this was already indexed
-			if cfg and path.exists("db/%s.bloomfilter" % path.basename(elffile)):
-				with open("db/%s.bloomfilter" % path.basename(elffile), "rb") as fp:
-					record = json.load(fp)
-					if digest == record["ELF-HASH"]:
-						bloom_bits = record["BLOOM"]
-						cfg = False
+				# Instead use what's already been logged
+				bloom_filter = MECHANISMS["BLOOM"]
 
 			m = ARCHS[e.header.e_machine]["PARSE"](e, {"CFG": cfg})
 
@@ -191,7 +210,7 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, LIBRARIES = 
 
 			# ########## Handling CFG Similarity ########## #
 			if "CFG_FILTER" in m:
-				similarity = get_similar(elffile, digest, m["CFG_FILTER"])
+				similarity = get_similar_cfg(elffile, digest, m["CFG_FILTER"])
 				del m["CFG_FILTER"]
 
 				for k in similarity.keys():
@@ -200,6 +219,7 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, LIBRARIES = 
 			# Arch dependent checks
 			for k in m.keys():
 				MECHANISMS[k] = m[k]
+
 
 		LIBRARIES[elffile] = MECHANISMS
 
@@ -220,13 +240,28 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, LIBRARIES = 
 					p = dedouble(path.sep.join((rpath, library)), '/')
 
 					if path.exists(p):
-						inspect(p, sysroot = sysroot, recursive = recursive, cfg = cfg, LIBRARIES = LIBRARIES, WORK_ARCH = WORK_ARCH)
+						inspect(p, sysroot = sysroot, recursive = recursive, cfg = cfg, force = force, LIBRARIES = LIBRARIES, WORK_ARCH = WORK_ARCH)
 						# Continue looking for other candidates as we might be confusing
 						# host libraries with actual sysroot ones
 						break
 
 			elif tag.entry.d_tag == "DT_RPATH":
-				rpaths.append(path.sep.join((sysroot, dynstr.get_string(tag.entry.d_val))))
+				LIB_RPATH = path.sep.join((sysroot, dynstr.get_string(tag.entry.d_val)))
+
+				# Add library-added RPATHs
+				MECHANIMS["RPATH"] = LIB_RPATH
+
+				rpaths.append(LIB_RPATH)
+
+	# Save MECHANISMS to file
+	with open("db/%s.json" % path.basename(elffile), "wb") as f:
+		json.dump(MECHANISMS, f)
+
+	# Before returning to user, remove bloom filters as it's not interestnig anywhere but here
+	for lib in LIBRARIES:
+		if "BLOOM" in LIBRARIES[lib]:
+			del LIBRARIES[lib]["BLOOM"]
+
 
 	return LIBRARIES
 
@@ -236,6 +271,7 @@ if __name__ == "__main__":
 	parser.add_argument("-s", "--sysroot", help = "Folder that holds system root (for cross compiled binaries)")
 	parser.add_argument("-r", "--recursive", help = "Continue parsing recursively over dependencies", action = "store_true")
 	parser.add_argument("-c", "--cfg", help = "Build static CFG signatures", action = "store_true")
+	parser.add_argument("-f", "--force", help = "Force reanalysis", action = "store_true")
 	parser.add_argument("file", help = "ELF File for parsing")
 	args = parser.parse_args()
 	if args.sysroot is None:
@@ -247,5 +283,14 @@ if __name__ == "__main__":
 	if args.cfg is None:
 		args.cfg = False
 
-	LIBRARIES = inspect(args.file, sysroot = args.sysroot, recursive = args.recursive, cfg = args.cfg)
+	if args.force is None:
+		args.force = False
+
+	LIBRARIES = inspect(args.file, sysroot = args.sysroot, recursive = args.recursive, cfg = args.cfg, force = args.force)
+
+	# On command line, ignore strings
+	for lib in LIBRARIES:
+		if "ELF-STRINGS" in LIBRARIES[lib]:
+			del LIBRARIES[lib]["ELF-STRINGS"]
+
 	pprint.PrettyPrinter(indent=4).pprint(LIBRARIES)
