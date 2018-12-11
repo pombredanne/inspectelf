@@ -5,6 +5,7 @@ import pprint
 from os import path
 from elftools.elf.elffile import ELFFile
 from capstone import *
+from static_cfg import *
 
 def dedouble(s, c):
 	now = s.replace(c * 2, c)
@@ -15,7 +16,7 @@ def dedouble(s, c):
 
 	return now
 
-def x64_parse(e):
+def x64_parse(e, options = None):
 	MECHANISMS = {"STACK_CANARIES": False}
 
 	md = Cs(CS_ARCH_X86, CS_MODE_64)
@@ -24,6 +25,9 @@ def x64_parse(e):
 		if i.mnemonic == "xor" and "fs:[0x28]" in i.op_str:
 			MECHANISMS["STACK_CANARIES"] = True
 			break
+	if options is not None:
+		if "CFG" in options:
+			exported_functions(e, CS_ARCH_X86, CS_MODE_64)
 
 	return MECHANISMS
 
@@ -55,7 +59,7 @@ def get_segments(e, name):
 
 	return s
 
-def inspect(elffile, sysroot = "/", recursive = False, LIBRARIES = {}, WORK_ARCH = None):
+def inspect(elffile, sysroot = "/", recursive = False, cfg = False, LIBRARIES = {}, WORK_ARCH = None):
 	if elffile in LIBRARIES:
 		return
 
@@ -108,7 +112,7 @@ def inspect(elffile, sysroot = "/", recursive = False, LIBRARIES = {}, WORK_ARCH
 
 		# Figure out ELF Arch
 		if e.header.e_machine in ARCHS and ARCHS[e.header.e_machine]["PARSE"] is not None:
-			m = ARCHS[e.header.e_machine]["PARSE"](e)
+			m = ARCHS[e.header.e_machine]["PARSE"](e, {"CFG": cfg})
 
 			# Arch dependent checks
 			for k in m.keys():
@@ -147,7 +151,8 @@ def inspect(elffile, sysroot = "/", recursive = False, LIBRARIES = {}, WORK_ARCH
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser()
 	parser.add_argument("-s", "--sysroot", help = "Folder that holds system root (for cross compiled binaries)")
-	parser.add_argument("-r", "--recursive", help = "Continue parsing recursively over dependencies", action="store_true")
+	parser.add_argument("-r", "--recursive", help = "Continue parsing recursively over dependencies", action = "store_true")
+	parser.add_argument("-c", "--cfg", help = "Build static CFG signatures", action = "store_true")
 	parser.add_argument("file", help = "ELF File for parsing")
 	args = parser.parse_args()
 	if args.sysroot is None:
@@ -156,5 +161,8 @@ if __name__ == "__main__":
 	if args.recursive is None:
 		args.recursive = False
 
-	LIBRARIES = inspect(args.file, args.sysroot, args.recursive)
+	if args.cfg is None:
+		args.cfg = False
+
+	LIBRARIES = inspect(args.file, sysroot = args.sysroot, recursive = args.recursive, cfg = args.cfg)
 	pprint.PrettyPrinter(indent=4).pprint(LIBRARIES)
