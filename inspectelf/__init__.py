@@ -3,13 +3,14 @@
 import argparse
 import pprint
 import hashlib
+import Levenshtein
+import json
 from os import path, mkdir, listdir
 from elftools.elf.elffile import ELFFile
 from capstone import *
 from static_cfg import *
 from string_cmp import *
 from binascii import hexlify
-import json
 
 def dedouble(s, c):
 	now = s.replace(c * 2, c)
@@ -82,6 +83,11 @@ def get_similar_cfg(elffile, digest, bloomfilter):
 			hits = 0
 			total = 0
 			# print filter(lambda x: x == 1, bloomfilter), filename
+
+			# Skip ones that don't have bloom
+			if "BLOOM" not in otherbloom:
+				continue
+
 			for a, b in zip(bloomfilter, otherbloom["BLOOM"]):
 				if a == b == 1:
 					hits += 1
@@ -101,17 +107,31 @@ def get_similar_cfg(elffile, digest, bloomfilter):
 				highest_match["PERCENTAGE"] = match
 				highest_match["ELF-FILENAME"] = otherbloom["ELF-FILENAME"]
 
-	print matches[1:]
+	# print matches[1:]
 	print "Best match: %s Match: %f" % (highest_match["ELF-FILENAME"], highest_match["PERCENTAGE"])
 
-	MECHANISMS["BEST-MATCH"] = highest_match["ELF-FILENAME"]
-	MECHANISMS["BEST-MATCH-PERCENTAGE"] = highest_match["PERCENTAGE"]
+	MECHANISMS["CFG-MATCH"] = highest_match["ELF-FILENAME"]
+	MECHANISMS["CFG-RATIO"] = highest_match["PERCENTAGE"]
 
 	# Write bloom filter to file in DB
 	with open("db/%s.json" % path.basename(elffile), "wb") as fp:
 		json.dump({"ELF-HASH": digest, "ELF-FILENAME": path.basename(elffile), "BLOOM": bloomfilter}, fp)
 
 	return MECHANISMS
+
+def get_similar_strings(strings):
+	highest_ratio = 0
+	highest_name = 0
+	for filename in listdir("db/"):
+		with open("db/%s" % filename, "rb") as fp:
+			data = json.load(fp)
+			orig_cat = str(strings.replace("\x00", ""))
+			target_cat = str(data["ELF-STRINGS"].replace("\x00", ""))
+			ratio = 1 - (Levenshtein.distance(orig_cat, target_cat)/ float(max(len(orig_cat), len(target_cat))))
+			if ratio > highest_ratio:
+				highest_ratio = ratio
+				highest_name = data["ELF-FILENAME"]
+	return {"STR-RATIO": highest_ratio, "STR-NAME": highest_name}
 
 def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = False, LIBRARIES = {}, WORK_ARCH = None):
 	if elffile in LIBRARIES:
@@ -133,6 +153,8 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = Fals
 			mkdir("db/")
 
 		MECHANISMS = {
+					"ELF-FILENAME": elffile,
+					"DEPENDENCIES": [],
 					"PIE": False,
 					"STACK_CANARIES": False,
 					"STRIPPED": False,
@@ -146,6 +168,7 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = Fals
 		with open(elffile, "rb") as f:
 			sha256.update(f.read())
 			digest = sha256.digest().encode("HEX")
+			MECHANISMS["ELF-HASH"] = digest
 
 		# Try reading from DB
 		if path.exists("db/%s.json" % path.basename(elffile)):
@@ -156,7 +179,7 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = Fals
 						# Remember to delete BLOOM
 						if "BLOOM" in record:
 							del record["BLOOM"]
-						return record
+						return { elffile: record }
 					else:
 						# If this is forced, reanalyze everything
 						# but have this record here just in case (Hint: For CFG Analysis)
@@ -191,7 +214,9 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = Fals
 
 		strings = string_scan(elffile)
 
-		MECHANISMS["ELF-STRINGS"] = "\n".join([ "\n".join(strings[k]) for k in strings ])
+		MECHANISMS["ELF-STRINGS"] = "\x00".join([ "\x00".join(strings[k]) for k in strings ])
+
+		str_similarity = get_similar_strings(MECHANISMS["ELF-STRINGS"])
 
 		# Figure out ELF Arch
 		if e.header.e_machine in ARCHS and ARCHS[e.header.e_machine]["PARSE"] is not None:
@@ -220,11 +245,11 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = Fals
 			for k in m.keys():
 				MECHANISMS[k] = m[k]
 
+		# Decide on similarity according to ratios
+		if str_similarity["STR-RATIO"] > 50:
+			MECHANISMS["ELF-SIMILAR"] = str_similarity["STR-NAME"]
 
 		LIBRARIES[elffile] = MECHANISMS
-
-		if not recursive:
-			return LIBRARIES
 
 		dynstr = get_section(e, ".dynstr")
 		rpaths = [ path.sep.join((sysroot, x)) for x in ["/lib/", "/usr/lib/"]]
@@ -236,14 +261,17 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = Fals
 		for tag in get_section(e, ".dynamic").iter_tags():
 			if tag.entry.d_tag == "DT_NEEDED":
 				library = dynstr.get_string(tag.entry.d_val)
-				for rpath in rpaths:
-					p = dedouble(path.sep.join((rpath, library)), '/')
+				MECHANISMS["DEPENDENCIES"].append(library)
 
-					if path.exists(p):
-						inspect(p, sysroot = sysroot, recursive = recursive, cfg = cfg, force = force, LIBRARIES = LIBRARIES, WORK_ARCH = WORK_ARCH)
-						# Continue looking for other candidates as we might be confusing
-						# host libraries with actual sysroot ones
-						break
+				if recursive:
+					for rpath in rpaths:
+						p = dedouble(path.sep.join((rpath, library)), '/')
+
+						if path.exists(p):
+							inspect(p, sysroot = sysroot, recursive = recursive, cfg = cfg, force = force, LIBRARIES = LIBRARIES, WORK_ARCH = WORK_ARCH)
+							# Continue looking for other candidates as we might be confusing
+							# host libraries with actual sysroot ones
+							break
 
 			elif tag.entry.d_tag == "DT_RPATH":
 				LIB_RPATH = path.sep.join((sysroot, dynstr.get_string(tag.entry.d_val)))
@@ -261,7 +289,6 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = Fals
 	for lib in LIBRARIES:
 		if "BLOOM" in LIBRARIES[lib]:
 			del LIBRARIES[lib]["BLOOM"]
-
 
 	return LIBRARIES
 
