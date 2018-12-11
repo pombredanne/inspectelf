@@ -127,6 +127,7 @@ def disasm_bb(data, offset):
 				# Return to previous layer
 
 			return bb
+
 	return bb
 
 def cfg_flat_instructions(bb):
@@ -174,12 +175,15 @@ def exported_functions(elf, ARCH, MODE):
 
 		root_bb = disasm_bb(data, symbol.entry.st_value)
 
+		# print root_bb.instructions
+
 		reset_visited_bb(root_bb)
 
 		# Create a list of instruction names across the CFG
 		hash_raw_data = cfg_flat_instructions(root_bb)
 
 		crcs = [crc32(x) for x in hash_raw_data]
+		# print crcs
 		# print [hex(x) for x in crcs]
 
 		for crc in crcs:
