@@ -71,23 +71,31 @@ def cfg_similarity(elffile):
 	# Next, calculate CFG
 	with open(elffile, "rb") as f:
 		# Extract symbol CFG
+		# print "CFG Build..."
 		symbols_cfg = cfg_build(ELFFile(f))
+
+	if symbols_cfg is None:
+		return {}
 
 	# Get flattened CFG hashes
 	hashes = []
 	for cfg in symbols_cfg:
 		hashes += cfg_hashes(cfg)
 
+	# print "HASHES: %d" % len(hashes)
 	# Create bloom filter
 	bloomfilter = bytearray(BLOOM_FILTER_SIZE)
 
 	# Extract symbol bloom filter
 	symbol_bloom = [ cfg_bloom(x) for x in symbols_cfg ]
+	# print len(symbols_cfg)
 
 	# Merge into a larger filter
 	for bloom in symbol_bloom:
 		for i in xrange(len(bloom)):
 			bloomfilter[i] |= bloom[i]
+
+	bloomfilter = cfg_bloom(symbols_cfg[0])
 
 	# Normalize to a bit list
 	bloomfilter = [1 if ((bloomfilter[i >> 3] & (1 << (i & 0b111))) != 0) else 0 for i in xrange(len(bloomfilter) * 8)]
@@ -115,6 +123,7 @@ def cfg_similarity(elffile):
 					total += 1
 				elif a == 1 or b == 1:
 					total += 1
+			# print "Hits: %d Total: %d" % (hits, total)
 
 			# Weirdly processed file. Ignore.
 			if total == 0:
@@ -134,6 +143,7 @@ def cfg_similarity(elffile):
 			if ratio > best["HASHES"]["RATIO"]:
 				best["HASHES"]["RATIO"] = ratio
 				best["HASHES"]["NAME"] = other["ELF-FILENAME"]
+			# print best
 
 	# Write bloom filter to file in DB
 	with open("db/%s.cfg" % path.basename(elffile), "wb") as fp:
@@ -178,15 +188,19 @@ def set_similarity(strings):
 
 def similarity_engine(elffile):
 	# Get the strings
+	# print "String scan"
 	strings = string_scan(elffile)
 	strings = "\x00".join([ "\x00".join(strings[k]) for k in strings ])
 
 	similarities = []
 
+	# print "CFG Generation"
 	similarities += cfg_similarity(elffile).values()
 
-	similarities.append(levenshtein_similarity(strings))
+	# print "Levenshtein"
+	# similarities.append(levenshtein_similarity(strings))
 
+	# print "Sets"
 	similarities.append(set_similarity(strings))
 
 	print similarities
@@ -219,9 +233,12 @@ def similarity_engine(elffile):
 
 	return best
 
-def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = False, LIBRARIES = {}, WORK_ARCH = None):
+def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = False, LIBRARIES = None, WORK_ARCH = None):
+	if LIBRARIES is None:
+		LIBRARIES = {}
+
 	if elffile in LIBRARIES:
-		return
+		return LIBRARIES[elffile]
 
 	with open(elffile, "rb") as f:
 		e = ELFFile(f)
@@ -270,6 +287,7 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = Fals
 						# If this is forced, reanalyze everything
 						# but have this record here just in case (Hint: For CFG Analysis)
 						MECHANISMS = record
+
 
 		# Check for PIE
 		text = get_section(e, ".text")

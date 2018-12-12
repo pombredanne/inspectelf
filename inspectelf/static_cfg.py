@@ -3,6 +3,8 @@
 from elftools.elf.elffile import ELFFile
 from capstone import *
 from capstone.x86_const import *
+from capstone.arm_const import *
+from capstone.arm64_const import *
 from binascii import crc32, hexlify
 import hashlib
 import struct
@@ -33,6 +35,78 @@ def reset_visited_bb(bb):
 			reset_visited_bb(child)
 
 visit_map = []
+
+def x64_disasm_bb_flat(data, offset, size):
+	# Create a disasm
+	md = Cs(CS_ARCH_X86, CS_MODE_64)
+	md.detail = True
+
+	root = bb = BasicBlock(offset)
+
+	# Add to visit map to mitigate loops
+	visit_map.append(bb)
+	BB_ENDS = [X86_GRP_JUMP, X86_GRP_CALL, X86_GRP_RET, X86_GRP_IRET]
+
+	BB_END = lambda i: filter(lambda g: g in BB_ENDS, i.groups)
+	IS_BB_END = lambda i: len(BB_END(i)) > 0
+
+	# Disasm a bit
+	for i in md.disasm(data[offset:offset + size], offset):
+		# print dir(i)
+		bb.instructions.append(i.mnemonic)
+		if IS_BB_END(i):
+			prev = bb
+			bb = BasicBlock(i.address)
+			prev.branches.append(bb)
+	return root
+
+def arm_disasm_bb_flat(data, offset, size):
+	# Create a disasm
+	md = Cs(CS_ARCH_ARM, CS_MODE_ARM)
+	md.detail = True
+
+	root = bb = BasicBlock(offset)
+
+	# Add to visit map to mitigate loops
+	visit_map.append(bb)
+	BB_ENDS = [ARM_GRP_JUMP, ARM_GRP_ENDING]
+
+	BB_END = lambda i: filter(lambda g: g in BB_ENDS, i.groups)
+	IS_BB_END = lambda i: len(BB_END(i)) > 0
+
+	# Disasm a bit
+	for i in md.disasm(data[offset:offset + size], offset):
+		# print dir(i)
+		bb.instructions.append(i.mnemonic)
+		if IS_BB_END(i):
+			prev = bb
+			bb = BasicBlock(i.address)
+			prev.branches.append(bb)
+	return root
+
+def arm64_disasm_bb_flat(data, offset, size):
+	# Create a disasm
+	md = Cs(CS_ARCH_ARM, CS_MODE_ARM)
+	md.detail = True
+
+	root = bb = BasicBlock(offset)
+
+	# Add to visit map to mitigate loops
+	visit_map.append(bb)
+	BB_ENDS = [ARM64_GRP_JUMP, ARM64_GRP_ENDING]
+
+	BB_END = lambda i: filter(lambda g: g in BB_ENDS, i.groups)
+	IS_BB_END = lambda i: len(BB_END(i)) > 0
+
+	# Disasm a bit
+	for i in md.disasm(data[offset:offset + size], offset):
+		# print dir(i)
+		bb.instructions.append(i.mnemonic)
+		if IS_BB_END(i):
+			prev = bb
+			bb = BasicBlock(i.address)
+			prev.branches.append(bb)
+	return root
 
 def x64_disasm_bb(data, offset):
 	global visted_bb
@@ -136,13 +210,20 @@ def x64_disasm_bb(data, offset):
 def cfg_flat_instructions(bb):
 	inst = []
 
+	while len(bb.branches) > 0:
+		inst += bb.instructions
+		bb = bb.branches[0]
+	inst += bb.instructions
+
+	return inst
+
 	# Avoid loops
 	if bb.visited:
 		return inst
 
 	bb.visited = True
 	for i in bb.instructions:
-		inst.append(i.insn_name())
+		inst.append(i)
 
 	# Merge instructions
 	for child in bb.branches:
@@ -151,7 +232,9 @@ def cfg_flat_instructions(bb):
 	return inst
 
 ARCH_DISASM = {
-		"EM_X86_64": x64_disasm_bb
+		"EM_ARM64": arm64_disasm_bb_flat,
+		"EM_ARM": arm_disasm_bb_flat,
+		"EM_X86_64": x64_disasm_bb_flat
 	}
 
 def cfg_build(elf):
@@ -159,8 +242,10 @@ def cfg_build(elf):
 
 	# Validate architecture support
 	if not elf.header.e_machine in ARCH_DISASM:
+		print "No supported arch"
 		return None
 
+	# print "Building CFG!!!"
 	visit_map = []
 
 	if type(elf) == str:
@@ -173,6 +258,15 @@ def cfg_build(elf):
 	data = elf.stream.read()
 
 	symbols_cfg = []
+
+	text = get_section(elf, ".text")
+
+	symbols_cfg = [ARCH_DISASM[elf.header.e_machine](data, text.header.sh_offset, text.header.sh_size)]
+
+	# print "Symbol CFG: %d" % len(symbols_cfg)
+	return symbols_cfg
+
+	# ### Building a tree takes too long for some reason. Build basic blocks linearily instead ### #
 
 	# Build basic blocks tree
 	for symbol in dynsym.iter_symbols():
@@ -196,19 +290,37 @@ def cfg_bloom(cfg_root):
 	hash_raw_data = cfg_flat_instructions(cfg_root)
 
 	crcs = [crc32(x) for x in hash_raw_data]
+
 	# print crcs
 	# print [hex(x) for x in crcs]
 
 	for crc in crcs:
 		# Set the bit offset (truncated to hash size)
 		idx = crc % (BLOOM_FILTER_SIZE * 8)
+		# print "CRC Idx: %d Bit: %d" % (idx >> 3, 1 << (idx & 0b111))
 		bloomfilter[idx >> 3] |= (1 << (idx & 0b111))
 
 	return bloomfilter
 
-def cfg_flatten_bb(cfg_root, bbs = None):
-	if bbs is None:
-		bbs = []
+def cfg_flatten_bb(cfg_root):
+	bbs = []
+
+	# As we're not building a tree ATM (Too time-expensive) flatten this recursion as well
+	while len(cfg_root.branches) > 0:
+		# Hash the instructions
+		s = hashlib.sha1()
+		for i in cfg_root.instructions:
+			s.update(i)
+		bbs.append(s.digest().encode("HEX"))
+
+		cfg_root = cfg_root.branches[0]
+	# Hash the last
+	s = hashlib.sha1()
+	for i in cfg_root.instructions:
+		s.update(i)
+	bbs.append(s.digest().encode("HEX"))
+
+	return bbs
 
 	# Avoid loops
 	if cfg_root.visited:
@@ -220,8 +332,11 @@ def cfg_flatten_bb(cfg_root, bbs = None):
 	# Hash the instructions
 	s = hashlib.sha256()
 	for i in cfg_root.instructions:
-		s.update(i.insn_name())
+		s.update(i)
 	bbs.append(s.digest().encode("HEX"))
+
+	for b in cfg_root.branches:
+		bbs += cfg_flatten_bb(b)
 
 	return bbs
 
