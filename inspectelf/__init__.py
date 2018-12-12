@@ -21,7 +21,7 @@ def dedouble(s, c):
 
 	return now
 
-def x64_parse(e, options = None):
+def x64_parse(e):
 	MECHANISMS = {"STACK_CANARIES": False}
 
 	md = Cs(CS_ARCH_X86, CS_MODE_64)
@@ -30,14 +30,6 @@ def x64_parse(e, options = None):
 		if i.mnemonic == "xor" and "fs:[0x28]" in i.op_str:
 			MECHANISMS["STACK_CANARIES"] = True
 			break
-	if options is not None:
-		if "CFG" in options and options["CFG"]:
-			print "Running CFG"
-			MECHANISMS["CFG_FILTER"] = exported_functions(e, CS_ARCH_X86, CS_MODE_64)
-
-			# Turn this to something that it's easy to work with
-			f = MECHANISMS["CFG_FILTER"]
-			MECHANISMS["CFG_FILTER"] =[1 if ((f[i >> 3] & (1 << (i & 0b111))) != 0) else 0 for i in xrange(len(f) * 8)]
 
 	return MECHANISMS
 
@@ -69,13 +61,41 @@ def get_segments(e, name):
 
 	return s
 
-def get_similar_cfg(elffile, digest, bloomfilter):
+def cfg_similarity(elffile):
+	# First, calculate file digest
+	with open(elffile, "rb") as f:
+		s = hashlib.sha256()
+		s.update(f.read())
+		digest = s.digest().encode("HEX")
+
+	# Next, calculate CFG
+	with open(elffile, "rb") as f:
+		# Extract symbol CFG
+		symbols_cfg = cfg_build(ELFFile(f))
+
+	# Create bloom filter
+	bloomfilter = bytearray(BLOOM_FILTER_SIZE)
+
+	# Extract symbol bloom filter
+	symbol_bloom = [ cfg_bloom(x) for x in symbols_cfg ]
+
+	# Merge into a larger filter
+	for bloom in symbol_bloom:
+		for i in xrange(len(bloom)):
+			bloomfilter[i] |= bloom[i]
+
+	# Normalize to a bit list
+	bloomfilter = [1 if ((bloomfilter[i >> 3] & (1 << (i & 0b111))) != 0) else 0 for i in xrange(len(bloomfilter) * 8)]
+
 	highest_match = {"PERCENTAGE": 0, "ELF-FILENAME": ""}
-	matches = []
-	MECHANISMS = {}
+	result = {}
 
 	# Iterate over all existing filters and find the one matching most
 	for filename in listdir("db/"):
+		# Only parse bloomfilter files
+		if not filename.endswith(".bloomfilter"):
+			continue
+
 		with open("db/%s" % filename, "rb") as fp:
 			# Load other bloom filter
 			otherbloom = json.load(fp)
@@ -83,10 +103,6 @@ def get_similar_cfg(elffile, digest, bloomfilter):
 			hits = 0
 			total = 0
 			# print filter(lambda x: x == 1, bloomfilter), filename
-
-			# Skip ones that don't have bloom
-			if "BLOOM" not in otherbloom:
-				continue
 
 			for a, b in zip(bloomfilter, otherbloom["BLOOM"]):
 				if a == b == 1:
@@ -102,27 +118,26 @@ def get_similar_cfg(elffile, digest, bloomfilter):
 			# Calculate matching percentage
 			match = float(hits) / total
 
-			matches.append((otherbloom["ELF-FILENAME"], match))
 			if match > highest_match["PERCENTAGE"]:
 				highest_match["PERCENTAGE"] = match
 				highest_match["ELF-FILENAME"] = otherbloom["ELF-FILENAME"]
 
-	# print matches[1:]
-	print "Best match: %s Match: %f" % (highest_match["ELF-FILENAME"], highest_match["PERCENTAGE"])
-
-	MECHANISMS["CFG-MATCH"] = highest_match["ELF-FILENAME"]
-	MECHANISMS["CFG-RATIO"] = highest_match["PERCENTAGE"]
+	result["NAME"] = highest_match["ELF-FILENAME"]
+	result["RATIO"] = highest_match["PERCENTAGE"]
 
 	# Write bloom filter to file in DB
-	with open("db/%s.json" % path.basename(elffile), "wb") as fp:
+	with open("db/%s.bloomfilter" % path.basename(elffile), "wb") as fp:
 		json.dump({"ELF-HASH": digest, "ELF-FILENAME": path.basename(elffile), "BLOOM": bloomfilter}, fp)
 
-	return MECHANISMS
+	return result
 
-def get_similar_strings(strings):
+def levenshtein_similarity(strings):
 	highest_ratio = 0
 	highest_name = 0
 	for filename in listdir("db/"):
+		if filename.endswith(".bloomfilter"):
+			continue
+
 		with open("db/%s" % filename, "rb") as fp:
 			data = json.load(fp)
 			orig_cat = str(strings.replace("\x00", ""))
@@ -131,7 +146,66 @@ def get_similar_strings(strings):
 			if ratio > highest_ratio:
 				highest_ratio = ratio
 				highest_name = data["ELF-FILENAME"]
-	return {"STR-RATIO": highest_ratio, "STR-NAME": highest_name}
+	return {"RATIO": highest_ratio, "NAME": highest_name}
+
+def set_similarity(strings):
+	highest_ratio = 0
+	highest_name = 0
+	for filename in listdir("db/"):
+		if filename.endswith(".bloomfilter"):
+			continue
+
+		with open("db/%s" % filename, "rb") as fp:
+			data = json.load(fp)
+			sample_set = set(strings.split("\x00"))
+			target_set = set(data["ELF-STRINGS"].split("\x00"))
+			ratio = len(set.intersection(sample_set, target_set)) / float(len(set.union(sample_set, target_set)))
+
+			if ratio > highest_ratio:
+				highest_ratio = ratio
+				highest_name = data["ELF-FILENAME"]
+	return {"RATIO": highest_ratio, "NAME": highest_name}
+
+def similarity_engine(elffile):
+	# Get the strings
+	strings = string_scan(elffile)
+	strings = "\x00".join([ "\x00".join(strings[k]) for k in strings ])
+
+	cfg_bloom = cfg_similarity(elffile)
+
+	str_similarity = levenshtein_similarity(strings)
+
+	str_set_similarity = set_similarity(strings)
+
+	similarities = [str_similarity, str_set_similarity, cfg_bloom]
+
+	simdict = {}
+
+	# Find the record with the highest overall similarity
+	for sim in similarities:
+		if sim["RATIO"] == 0:
+			continue
+
+		if sim["NAME"] not in simdict:
+			simdict[sim["NAME"]] = {"RATIO": 0, "MEMBERS": 0}
+		simdict[sim["NAME"]]["MEMBERS"] += 1
+		simdict[sim["NAME"]]["RATIO"] += sim["RATIO"]
+
+	if len(simdict.keys()) == 0:
+		return {}
+
+	best = {"RATIO": 0, "MBMERS": 0, "ELF-SIMILAR": ""}
+	for s in simdict:
+		if best["RATIO"] == 0 or (simdict[s]["RATIO"] / float(simdict[s]["MEMBERS"])) > (best["RATIO"] / float(best["MEMBERS"])):
+			best = simdict[s]
+			best["ELF-SIMILAR"] = s
+
+	# Fix output for upper layer
+	best["ELF-SIMILAR-RATIO"] = best["RATIO"]/float(best["MEMBERS"])
+	del best["RATIO"]
+	del best["MEMBERS"]
+
+	return best
 
 def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = False, LIBRARIES = {}, WORK_ARCH = None):
 	if elffile in LIBRARIES:
@@ -153,7 +227,7 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = Fals
 			mkdir("db/")
 
 		MECHANISMS = {
-					"ELF-FILENAME": elffile,
+					"ELF-FILENAME": path.basename(elffile),
 					"DEPENDENCIES": [],
 					"PIE": False,
 					"STACK_CANARIES": False,
@@ -212,42 +286,22 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = Fals
 			if symbol.name.startswith("__") and symbol.name.endswith("_chk"):
 				MECHANISMS["FORTIFY_SOURCE"] = True
 
+		# ############################# SIMILARITY ENGINES ############################# #
+		similarity = similarity_engine(elffile)
+		for k in similarity.keys():
+			MECHANISMS[k] = similarity[k]
+
 		strings = string_scan(elffile)
 
 		MECHANISMS["ELF-STRINGS"] = "\x00".join([ "\x00".join(strings[k]) for k in strings ])
 
-		str_similarity = get_similar_strings(MECHANISMS["ELF-STRINGS"])
-
 		# Figure out ELF Arch
 		if e.header.e_machine in ARCHS and ARCHS[e.header.e_machine]["PARSE"] is not None:
-			if "BLOOM" in MECHANISMS:
-				# Don't run CFG again as it's suuuuuper resource heavy
-				cfg = False
-
-				# Instead use what's already been logged
-				bloom_filter = MECHANISMS["BLOOM"]
-
-			m = ARCHS[e.header.e_machine]["PARSE"](e, {"CFG": cfg})
-
-			# Artificialy add this after parsing
-			if "bloom_bits" in locals():
-				m["CFG_FILTER"] = bloom_bits
-
-			# ########## Handling CFG Similarity ########## #
-			if "CFG_FILTER" in m:
-				similarity = get_similar_cfg(elffile, digest, m["CFG_FILTER"])
-				del m["CFG_FILTER"]
-
-				for k in similarity.keys():
-					m[k] = similarity[k]
+			m = ARCHS[e.header.e_machine]["PARSE"](e)
 
 			# Arch dependent checks
 			for k in m.keys():
 				MECHANISMS[k] = m[k]
-
-		# Decide on similarity according to ratios
-		if str_similarity["STR-RATIO"] > 50:
-			MECHANISMS["ELF-SIMILAR"] = str_similarity["STR-NAME"]
 
 		LIBRARIES[elffile] = MECHANISMS
 

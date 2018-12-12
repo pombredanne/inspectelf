@@ -8,6 +8,8 @@ import struct
 import re
 
 # Reimplementing https://arxiv.org/pdf/1703.00298.pdf
+# Large filter size
+BLOOM_FILTER_SIZE = 1024 * 4 # 4KByte
 
 def get_section(elf, name):
 	for section in elf.iter_sections():
@@ -31,7 +33,7 @@ def reset_visited_bb(bb):
 
 visit_map = []
 
-def disasm_bb(data, offset):
+def x64_disasm_bb(data, offset):
 	global visted_bb
 
 	# Create a disasm
@@ -93,12 +95,12 @@ def disasm_bb(data, offset):
 				# print "JUMPING to %x" % jmp_offset
 
 				# Start a new basic block
-				bb.branches.append(disasm_bb(data, jmp_offset))
+				bb.branches.append(x64_disasm_bb(data, jmp_offset))
 
 				# If it is a hard JMP, we SHOULDN'T continue parsing next linear instructions
 				# Otherwise, continue branching the following instruction linearily
 				if i.insn_name() != "jmp":
-					bb.branches.append(disasm_bb(data, i.address + len(i.bytes)))
+					bb.branches.append(x64_disasm_bb(data, i.address + len(i.bytes)))
 
 			elif end_type == X86_GRP_CALL:
 				# Calculate call offset
@@ -116,10 +118,10 @@ def disasm_bb(data, offset):
 				# print "CALLING %x" % call_offset
 
 				# Disassemble one branch
-				bb.branches.append(disasm_bb(data, call_offset))
+				bb.branches.append(x64_disasm_bb(data, call_offset))
 
 				# Disassemble the other
-				bb.branches.append(disasm_bb(data, i.address + len(i.bytes)))
+				bb.branches.append(x64_disasm_bb(data, i.address + len(i.bytes)))
 
 			elif end_type == X86_GRP_RET or end_type == X86_GRP_IRET:
 				# print "RETURNING"
@@ -147,8 +149,17 @@ def cfg_flat_instructions(bb):
 
 	return inst
 
-def exported_functions(elf, ARCH, MODE):
+ARCH_DISASM = {
+		"EM_X86_64": x64_disasm_bb
+	}
+
+def cfg_build(elf):
 	global visit_map
+
+	# Validate architecture support
+	if not elf.header.e_machine in ARCH_DISASM:
+		return None
+
 	visit_map = []
 
 	if type(elf) == str:
@@ -160,11 +171,7 @@ def exported_functions(elf, ARCH, MODE):
 	elf.stream.seek(0)
 	data = elf.stream.read()
 
-	# Large filter size
-	BLOOM_FILTER_SIZE = 1024 * 4 # 4KByte
-
-	# Create bloom filter to calculate the hash signature for every function
-	bloomfilter = bytearray(BLOOM_FILTER_SIZE)
+	symbols_cfg = []
 
 	# Build basic blocks tree
 	for symbol in dynsym.iter_symbols():
@@ -173,22 +180,27 @@ def exported_functions(elf, ARCH, MODE):
 
 		# print "=" * 32 + " " + symbol.name + " " + "=" * 32
 
-		root_bb = disasm_bb(data, symbol.entry.st_value)
+		# Already validated arch support
+		symbols_cfg.append(ARCH_DISASM[elf.header.e_machine](data, symbol.entry.st_value))
 
-		# print root_bb.instructions
+	return symbols_cfg
 
-		reset_visited_bb(root_bb)
+def cfg_bloom(cfg_root):
+	# Create bloom filter to calculate the hash signature for every function
+	bloomfilter = bytearray(BLOOM_FILTER_SIZE)
 
-		# Create a list of instruction names across the CFG
-		hash_raw_data = cfg_flat_instructions(root_bb)
+	reset_visited_bb(cfg_root)
 
-		crcs = [crc32(x) for x in hash_raw_data]
-		# print crcs
-		# print [hex(x) for x in crcs]
+	# Create a list of instruction names across the CFG
+	hash_raw_data = cfg_flat_instructions(cfg_root)
 
-		for crc in crcs:
-			# Set the bit offset (truncated to hash size)
-			idx = crc % (BLOOM_FILTER_SIZE * 8)
-			bloomfilter[idx >> 3] |= (1 << (idx & 0b111))
+	crcs = [crc32(x) for x in hash_raw_data]
+	# print crcs
+	# print [hex(x) for x in crcs]
+
+	for crc in crcs:
+		# Set the bit offset (truncated to hash size)
+		idx = crc % (BLOOM_FILTER_SIZE * 8)
+		bloomfilter[idx >> 3] |= (1 << (idx & 0b111))
 
 	return bloomfilter
