@@ -132,7 +132,7 @@ def cfg_similarity(elffile):
 			# Calculate matching percentage
 			match = float(hits) / total
 
-			if match > best["BLOOM"]["RATIO"]:
+			if match > best["BLOOM"]["RATIO"] and match != 1:
 				best["BLOOM"]["RATIO"] = match
 				best["BLOOM"]["NAME"] = other["ELF-FILENAME"]
 
@@ -140,7 +140,7 @@ def cfg_similarity(elffile):
 			ratio = len(set.intersection(set(hashes), set(other["HASHES"]))) / float(len(set.union(set(hashes), set(other["HASHES"]))))
 
 			# Find best match
-			if ratio > best["HASHES"]["RATIO"]:
+			if ratio > best["HASHES"]["RATIO"] and ratio != 1:
 				best["HASHES"]["RATIO"] = ratio
 				best["HASHES"]["NAME"] = other["ELF-FILENAME"]
 			# print best
@@ -163,7 +163,7 @@ def levenshtein_similarity(strings):
 			orig_cat = str(strings.replace("\x00", ""))
 			target_cat = str(data["ELF-STRINGS"].replace("\x00", ""))
 			ratio = 1 - (Levenshtein.distance(orig_cat, target_cat)/ float(max(len(orig_cat), len(target_cat))))
-			if ratio > highest_ratio:
+			if ratio > highest_ratio and ratio != 1:
 				highest_ratio = ratio
 				highest_name = data["ELF-FILENAME"]
 	return {"RATIO": highest_ratio, "NAME": highest_name}
@@ -181,7 +181,7 @@ def set_similarity(strings):
 			target_set = set(data["ELF-STRINGS"].split("\x00"))
 			ratio = len(set.intersection(sample_set, target_set)) / float(len(set.union(sample_set, target_set)))
 
-			if ratio > highest_ratio:
+			if ratio > highest_ratio and ratio != 1:
 				highest_ratio = ratio
 				highest_name = data["ELF-FILENAME"]
 	return {"RATIO": highest_ratio, "NAME": highest_name}
