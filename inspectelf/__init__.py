@@ -73,6 +73,11 @@ def cfg_similarity(elffile):
 		# Extract symbol CFG
 		symbols_cfg = cfg_build(ELFFile(f))
 
+	# Get flattened CFG hashes
+	hashes = []
+	for cfg in symbols_cfg:
+		hashes += cfg_hashes(cfg)
+
 	# Create bloom filter
 	bloomfilter = bytearray(BLOOM_FILTER_SIZE)
 
@@ -87,24 +92,24 @@ def cfg_similarity(elffile):
 	# Normalize to a bit list
 	bloomfilter = [1 if ((bloomfilter[i >> 3] & (1 << (i & 0b111))) != 0) else 0 for i in xrange(len(bloomfilter) * 8)]
 
-	highest_match = {"PERCENTAGE": 0, "ELF-FILENAME": ""}
-	result = {}
+	best = { "BLOOM": {"RATIO": 0, "NAME": " "}, "HASHES": {"RATIO": 0, "NAME": " "} }
 
 	# Iterate over all existing filters and find the one matching most
 	for filename in listdir("db/"):
 		# Only parse bloomfilter files
-		if not filename.endswith(".bloomfilter"):
+		if not filename.endswith(".cfg"):
 			continue
 
 		with open("db/%s" % filename, "rb") as fp:
+			# ######## BLOOM FILTERS ######## #
 			# Load other bloom filter
-			otherbloom = json.load(fp)
+			other = json.load(fp)
 
 			hits = 0
 			total = 0
 			# print filter(lambda x: x == 1, bloomfilter), filename
 
-			for a, b in zip(bloomfilter, otherbloom["BLOOM"]):
+			for a, b in zip(bloomfilter, other["BLOOM"]):
 				if a == b == 1:
 					hits += 1
 					total += 1
@@ -118,24 +123,29 @@ def cfg_similarity(elffile):
 			# Calculate matching percentage
 			match = float(hits) / total
 
-			if match > highest_match["PERCENTAGE"]:
-				highest_match["PERCENTAGE"] = match
-				highest_match["ELF-FILENAME"] = otherbloom["ELF-FILENAME"]
+			if match > best["BLOOM"]["RATIO"]:
+				best["BLOOM"]["RATIO"] = match
+				best["BLOOM"]["NAME"] = other["ELF-FILENAME"]
 
-	result["NAME"] = highest_match["ELF-FILENAME"]
-	result["RATIO"] = highest_match["PERCENTAGE"]
+			# ######## BB Hashes ######## #
+			ratio = len(set.intersection(set(hashes), set(other["HASHES"]))) / float(len(set.union(set(hashes), set(other["HASHES"]))))
+
+			# Find best match
+			if ratio > best["HASHES"]["RATIO"]:
+				best["HASHES"]["RATIO"] = ratio
+				best["HASHES"]["NAME"] = other["ELF-FILENAME"]
 
 	# Write bloom filter to file in DB
-	with open("db/%s.bloomfilter" % path.basename(elffile), "wb") as fp:
-		json.dump({"ELF-HASH": digest, "ELF-FILENAME": path.basename(elffile), "BLOOM": bloomfilter}, fp)
+	with open("db/%s.cfg" % path.basename(elffile), "wb") as fp:
+		json.dump({"ELF-HASH": digest, "ELF-FILENAME": path.basename(elffile), "BLOOM": bloomfilter, "HASHES": hashes}, fp)
 
-	return result
+	return best
 
 def levenshtein_similarity(strings):
 	highest_ratio = 0
 	highest_name = 0
 	for filename in listdir("db/"):
-		if filename.endswith(".bloomfilter"):
+		if filename.endswith(".cfg"):
 			continue
 
 		with open("db/%s" % filename, "rb") as fp:
@@ -152,7 +162,7 @@ def set_similarity(strings):
 	highest_ratio = 0
 	highest_name = 0
 	for filename in listdir("db/"):
-		if filename.endswith(".bloomfilter"):
+		if filename.endswith(".cfg"):
 			continue
 
 		with open("db/%s" % filename, "rb") as fp:
@@ -171,13 +181,15 @@ def similarity_engine(elffile):
 	strings = string_scan(elffile)
 	strings = "\x00".join([ "\x00".join(strings[k]) for k in strings ])
 
-	cfg_bloom = cfg_similarity(elffile)
+	similarities = []
 
-	str_similarity = levenshtein_similarity(strings)
+	similarities += cfg_similarity(elffile).values()
 
-	str_set_similarity = set_similarity(strings)
+	similarities.append(levenshtein_similarity(strings))
 
-	similarities = [str_similarity, str_set_similarity, cfg_bloom]
+	similarities.append(set_similarity(strings))
+
+	print similarities
 
 	simdict = {}
 

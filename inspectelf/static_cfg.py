@@ -4,6 +4,7 @@ from elftools.elf.elffile import ELFFile
 from capstone import *
 from capstone.x86_const import *
 from binascii import crc32, hexlify
+import hashlib
 import struct
 import re
 
@@ -204,3 +205,29 @@ def cfg_bloom(cfg_root):
 		bloomfilter[idx >> 3] |= (1 << (idx & 0b111))
 
 	return bloomfilter
+
+def cfg_flatten_bb(cfg_root, bbs = None):
+	if bbs is None:
+		bbs = []
+
+	# Avoid loops
+	if cfg_root.visited:
+		return bbs
+
+	# Mark this node as visited
+	cfg_root.visited = True
+
+	# Hash the instructions
+	s = hashlib.sha256()
+	for i in cfg_root.instructions:
+		s.update(i.insn_name())
+	bbs.append(s.digest().encode("HEX"))
+
+	return bbs
+
+def cfg_hashes(cfg_root):
+	# Reset path markers
+	reset_visited_bb(cfg_root)
+
+	# Get flat list of BB hashes
+	return cfg_flatten_bb(cfg_root)
