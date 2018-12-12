@@ -8,5 +8,5 @@ setup(name='inspectelf',
       author_email='',
       license='',
       packages=['inspectelf'],
-      install_requires=['capstone', 'elftools'],
+      install_requires=['capstone', 'pyelftools'],
       zip_safe=False)
