@@ -155,7 +155,7 @@ def levenshtein_similarity(strings):
 	highest_ratio = 0
 	highest_name = 0
 	for filename in listdir("db/"):
-		if filename.endswith(".cfg"):
+		if not filename.endswith(".json"):
 			continue
 
 		with open("db/%s" % filename, "rb") as fp:
@@ -172,7 +172,7 @@ def set_similarity(strings):
 	highest_ratio = 0
 	highest_name = 0
 	for filename in listdir("db/"):
-		if filename.endswith(".cfg"):
+		if not filename.endswith(".json"):
 			continue
 
 		with open("db/%s" % filename, "rb") as fp:
