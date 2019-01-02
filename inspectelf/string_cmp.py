@@ -122,7 +122,7 @@ ignore_strings = [
 ]
 
 # Retrieves readable strings from a (section of an ELF) file
-def read_strings(f, section):
+def read_strings(f, section = None):
 	i = 0
 	inString = False
 	curStr = bytearray('')
