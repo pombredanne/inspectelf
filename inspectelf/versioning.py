@@ -196,13 +196,13 @@ def versions(url):
 
 if __name__ == "__main__":
 	# versions("http://ports.ubuntu.com/ubuntu-ports/pool/main/libs/libshout/")
-	versions("http://il.archive.ubuntu.com/ubuntu/pool/main/o/openssl/")
-	exit()
+	# versions("http://il.archive.ubuntu.com/ubuntu/pool/main/o/openssl/")
+	# exit()
 	parser = argparse.ArgumentParser()
-	parser.add_argument("file", help = "ELF File for parsing")
+	parser.add_argument("url", help = "Debian package list url")
 
 	# Parse arguments
 	args = parser.parse_args()
 
-	version(args.file)
+	versions(args.url)
 
