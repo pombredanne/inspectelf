@@ -5,7 +5,9 @@ import argparse
 from string_cmp import read_strings
 import re
 import os
+import magic
 import string
+import urllib
 import urllib2
 import unix_ar
 import tarfile
@@ -34,27 +36,11 @@ def strings(filename, min=4):
 		if len(result) >= min:  # catch result at EOF
 			yield result
 
-def version(elffile):
-	strs = strings(elffile)
-
-	for s in strs:
-		#if "version" in s:
-		#	print s
-		patterns = []
-		patterns.append("v([0-9]+\.[0-9]+\.[0-9]+)")
-		patterns.append("([0-9]+\.[0-9]+\.[0-9]+)")
-		# patterns.append("([0-9]+\.[0-9]+)")
-		for p in patterns:
-			m = re.match(".*%s.*" % p, s)
-
-			if m is not None:
-				print m.groups()[0]
-				print s
-				break
 class Parser(HTMLParser):
 	def __init__(self, baseurl):
 		HTMLParser.__init__(self)
-		self.versions = {}
+		self.links = []
+		self.subdirs = []
 		self.extensions = ["dsc", "deb", "xz", "gz", "tar", "debian"]
 		self.baseurl = baseurl
 
@@ -65,21 +51,56 @@ class Parser(HTMLParser):
 					continue
 
 				url = attr[1]
-				m = re.match(".+(\d+\.\d+\.\d+[a-z]?).*", url)
-				if m is not None:
-					v = m.groups()[0]
-					if v not in self.versions:
-						self.versions[v] = []
 
-					libname = url
+				# Mark subdirectories
+				if url[0] != '/' and url[-1] == '/' and url.startswith("lib"):
+					self.subdirs.append(os.path.sep.join((self.baseurl, url)))
 
-					# Sanitize extensions
-					for ext in self.extensions:
-						if libname.endswith(ext):
-							libname = libname[:-(len(ext) + 1)]
+				if not url.endswith(".deb"):
+					continue
 
-					self.versions[v].append({"libname": libname, "link": "%s%s%s" % (self.baseurl, os.path.sep, url)})
-					# print m.groups()[0]
+				p = re.compile('(?:http.*://)?(?P<host>[^:/ ]+).?(?P<port>[0-9]*).*')
+
+				if url[0] == '/':
+					m = p.search(self.baseurl)
+
+					full_url = os.path.sep.join(("http:/", m.group("host"), url))
+				else:
+					full_url = os.path.sep.join((self.baseurl, url))
+
+				self.links.append(full_url)
+
+def dissect_links(links):
+	libraries = {}
+
+	for link in links:
+		# Get the filename to be downloaded
+		filename = link[link.rfind('/') + 1:]
+
+		# Get the library name
+		m = re.match("([a-zA-Z0-9]+)[-_].*", filename)
+
+		if m is None:
+			continue
+
+		# Get the library name
+		libname = m.groups()[0]
+
+		if libname not in libraries:
+			libraries[libname] = {}
+
+		patterns = [".+[\-_](\d+\.\d+\.\d+[a-z]?).*", ".+[\-_](\d+\.\d+).*"]
+		for p in patterns:
+			m = re.match(p, filename)
+			if m is not None:
+				v = m.groups()[0]
+				if v not in libraries[libname]:
+					libraries[libname][v] = []
+
+				libraries[libname][v].append({"libname": filename, "link": link})
+
+	return libraries
+
 def download_versions(projname, versions):
 	if not os.path.exists("dl"):
 		os.mkdir("dl")
@@ -99,7 +120,7 @@ def download_versions(projname, versions):
 			# Clean empty folders
 			found = False
 
-			if not b["link"].endswith("deb"):
+			if not b["link"].endswith(".deb"):
 				continue
 
 			# Get download path
@@ -151,8 +172,15 @@ def download_versions(projname, versions):
 						# Create temporary file
 						t = tarfile.open(f.name)
 						for tarname in t.getnames():
-							if tarname.endswith(".so"):
+							if tarname.endswith(".so") or tarname.endswith(".a") or ".so." in tarname:
 								t.extract(tarname, basepath)
+
+								localpath = os.path.sep.join([basepath, tarname])
+
+								if "application/x-sharedlib" not in magnum.id_filename(localpath):
+									# print tarname, magnum.id_filename(localpath)
+									os.unlink(localpath)
+									continue
 
 								# Move the shared object to a shorter directory
 								os.rename(os.path.sep.join([basepath, tarname]), os.path.sep.join([libdl, os.path.basename(tarname)]))
@@ -160,7 +188,7 @@ def download_versions(projname, versions):
 								# Don't clean this directory
 								vfound = found = True
 
-								print tarname
+								print "Found:", tarname
 
 						t.close()
 
@@ -180,24 +208,23 @@ def download_versions(projname, versions):
 			shutil.rmtree(vpath)
 
 def versions(url):
-	u = urllib2.urlopen(url) #"http://ports.ubuntu.com/ubuntu-ports/pool/main/o/openssl/")
+	print url
+	u = urllib2.urlopen(url)
 	data = u.read()
-	parser = Parser(url) #"http://ports.ubuntu.com/ubuntu-ports/pool/main/o/openssl/")
+	parser = Parser(url)
 	parser.feed(data)
+	for subdir in parser.subdirs:
+		versions(subdir)
 
-	# Clean trailing /
-	if url[-1] == '/':
-		url = url[:-1]
+	libraries = dissect_links(parser.links)
 
-	print "Project name: %s" % url.split('/')[-1]
-	download_versions(url.split('/')[-1], parser.versions)
-	pp = pprint.PrettyPrinter(depth=6)
-	# pp.pprint(parser.versions)
+	# Download everything per library
+	for libname in libraries:
+		download_versions(libname, libraries[libname])
 
 if __name__ == "__main__":
-	# versions("http://ports.ubuntu.com/ubuntu-ports/pool/main/libs/libshout/")
-	# versions("http://il.archive.ubuntu.com/ubuntu/pool/main/o/openssl/")
-	# exit()
+	magnum = magic.Magic(flags = magic.MAGIC_MIME)
+
 	parser = argparse.ArgumentParser()
 	parser.add_argument("url", help = "Debian package list url")
 
@@ -206,3 +233,4 @@ if __name__ == "__main__":
 
 	versions(args.url)
 
+	magnum.close()
