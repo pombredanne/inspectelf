@@ -77,12 +77,11 @@ def dissect_links(links):
 		# Get the filename to be downloaded
 		filename = link[link.rfind('/') + 1:]
 
+		# Get the library name
 		if filename.startswith("python-"):
-			# Get the library name
-			m = re.match("([a-zA-Z0-9]+)[-_].*", filename)
-		else:
 			m = re.match("python-([a-zA-Z0-9]+)[-_].*", filename)
-
+		else:
+			m = re.match("([a-zA-Z0-9]+)[-_].*", filename)
 
 		if m is None:
 			continue
@@ -108,6 +107,8 @@ def dissect_links(links):
 def download_versions(projname, versions):
 	if not os.path.exists("dl"):
 		os.mkdir("dl")
+
+	dfound = False
 
 	projpath = "dl/%s" % (projname)
 	if not os.path.exists(projpath):
@@ -190,7 +191,7 @@ def download_versions(projname, versions):
 								os.rename(os.path.sep.join([basepath, tarname]), os.path.sep.join([libdl, os.path.basename(tarname)]))
 
 								# Don't clean this directory
-								vfound = found = True
+								dfound = vfound = found = True
 
 								print "Found:", tarname
 
@@ -210,6 +211,8 @@ def download_versions(projname, versions):
 				shutil.rmtree(basepath)
 		if not vfound:
 			shutil.rmtree(vpath)
+	if not dfound:
+		shutil.rmtree(projpath)
 
 def versions(url):
 	print url
