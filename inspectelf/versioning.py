@@ -77,8 +77,12 @@ def dissect_links(links):
 		# Get the filename to be downloaded
 		filename = link[link.rfind('/') + 1:]
 
-		# Get the library name
-		m = re.match("([a-zA-Z0-9]+)[-_].*", filename)
+		if filename.startswith("python-"):
+			# Get the library name
+			m = re.match("([a-zA-Z0-9]+)[-_].*", filename)
+		else:
+			m = re.match("python-([a-zA-Z0-9]+)[-_].*", filename)
+
 
 		if m is None:
 			continue
