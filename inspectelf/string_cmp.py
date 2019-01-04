@@ -1,6 +1,14 @@
+#!/usr/bin/python
+
 from elftools.elf.elffile import ELFFile
+from shove import Shove
 import itertools
 import operator
+import argparse
+import os
+import string
+import hashlib
+from versioning import library_name
 
 ignore_strings = [
 	".ARM.attributes",
@@ -121,6 +129,20 @@ ignore_strings = [
 	"register_tm_clones",
 ]
 
+def strings(filename, min=4):
+	# with open(filename, errors="ignore") as f:  # Python 3.x
+	with open(filename, "rb") as f:           # Python 2.x
+		result = ""
+		for c in f.read():
+			if c in string.printable:
+				result += c
+				continue
+			if len(result) >= min:
+				yield result
+			result = ""
+		if len(result) >= min:  # catch result at EOF
+			yield result
+
 # Retrieves readable strings from a (section of an ELF) file
 def read_strings(f, section = None):
 	i = 0
@@ -188,3 +210,86 @@ def string_scan(elffile):
 				strs[section.name] = list(get_strings(elffile, section))
 
 	return strs
+
+def build_db(db, root):
+	db = Shove("file://db")
+
+	# First directory heirarchy holds project names
+	for proj in os.listdir(root):
+		# Create a new project in db
+		if proj not in db:
+			db[proj] = { }
+
+		for version in os.listdir(os.path.sep.join((root, proj))):
+			for arch in os.listdir(os.path.sep.join((root, proj, version))):
+				for candidate in os.listdir(os.path.sep.join((root, proj, version, arch))):
+					c = os.path.sep.join((root, proj, version, arch, candidate))
+					so = os.path.sep.join((c, os.listdir(c)[0]))
+					print "Processing %s" % (so)
+
+					# Get the file hash
+					with open(so, "rb") as f:
+						s = hashlib.sha256()
+						s.update(f.read())
+						h = s.digest()
+
+					# Don't parse the same file again
+					if h in db[proj]:
+						continue
+
+					# Start parsing every candidate into DB
+					db[proj][h] = {
+						"version": version,
+						"arch": arch,
+						"strings": set([ s for s in strings(so) ])
+						}
+	db.close()
+
+def similarity(elffile):
+	db = Shove("file://db")
+
+	libname = library_name(elffile)
+
+	if libname is None:
+		raise Exception("Unsupported library name")
+
+	# Library not indexed! 
+	if libname not in db:
+		return None
+
+	# Start by finding an exact match
+	with open(elffile, "rb") as f:
+		s = hashlib.sha256()
+		s.update(r.read())
+		h = s.digest()
+
+	if h in db[libname]:
+		return db[libname][h]
+
+	highest_ratio = 0
+	highest_instance = 0
+
+	# Get all its strings
+	target_set = set([ s for s in strings(elffile) ])
+
+	# No exact match. Look for the most similar
+	for h in db[libname]:
+		instance = db[libname][h]
+
+		ratio = len(set.intersection(instance["strings"], target_set)) / float(len(set.union(instance["strings"], target_set)))
+
+		if ratio > highest_ratio:
+			highest_ratio = ratio
+			highest_instance = instance
+
+	db.close()
+
+	return {"instance": highest_instance, "ratio": highest_ratio}
+
+
+
+if __name__ == "__main__":
+	parser = argparse.ArgumentParser()
+	parser.add_argument("path", help = "Path for shared objects directory tree")
+	args = parser.parse_args()
+	build_db(args.path)
