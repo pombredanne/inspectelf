@@ -8,8 +8,7 @@ import json
 from os import path, mkdir, listdir
 from elftools.elf.elffile import ELFFile
 from capstone import *
-from static_cfg import *
-from string_cmp import *
+from similarity import similarity
 from binascii import hexlify
 
 def dedouble(s, c):
@@ -317,14 +316,12 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = Fals
 				MECHANISMS["FORTIFY_SOURCE"] = True
 
 		# ############################# SIMILARITY ENGINES ############################# #
-		similarity = similarity_engine(elffile)
-		for k in similarity.keys():
-			MECHANISMS[k] = similarity[k]
-
-		strings = string_scan(elffile)
-
-		MECHANISMS["ELF-STRINGS"] = "\x00".join([ "\x00".join(strings[k]) for k in strings ])
-
+		similarity = similarity(elffile)
+		
+		LIBRARIES["ELF-SIMILAR"] = similarity["libname"]
+		LIBRARIES["ELF-SIMILAR-VERSION"] = similarity["instance"]["version"]
+		LIBRARIES["ELF-SIMILAR-RATIO"] = similarity["ratio"]
+		
 		# Figure out ELF Arch
 		if e.header.e_machine in ARCHS and ARCHS[e.header.e_machine]["PARSE"] is not None:
 			m = ARCHS[e.header.e_machine]["PARSE"](e)

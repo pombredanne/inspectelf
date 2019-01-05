@@ -19,13 +19,11 @@ def get_section(elf, name):
 		if name == section.name:
 			return section
 class BasicBlock:
-	def __init__(self, offset):
-		self.offset = offset
+	def __init__(self):
+		self.init = False
+		self.start = None
+		self.end = None
 		self.instructions = []
-		self.branches = []
-		self.parent = None
-		self.end_type = None
-		self.visited = False
 
 def reset_visited_bb(bb):
 	bb.visited = False
@@ -34,62 +32,102 @@ def reset_visited_bb(bb):
 		if child.visited:
 			reset_visited_bb(child)
 
-visit_map = []
-
 def x64_disasm_bb_flat(data, offset, size):
 	# Create a disasm
 	md = Cs(CS_ARCH_X86, CS_MODE_64)
 	md.detail = True
 
-	root = bb = BasicBlock(offset)
+	bb = BasicBlock()
 
-	# Add to visit map to mitigate loops
-	visit_map.append(bb)
 	BB_ENDS = [X86_GRP_JUMP, X86_GRP_CALL, X86_GRP_RET, X86_GRP_IRET]
 
 	BB_END = lambda i: filter(lambda g: g in BB_ENDS, i.groups)
 	IS_BB_END = lambda i: len(BB_END(i)) > 0
 
+	blocks = []
+
 	# Disasm a bit
 	for i in md.disasm(data[offset:offset + size], offset):
-		# print dir(i)
+		if not bb.init:
+			bb.start = i.address
+
 		bb.instructions.append(i.mnemonic)
+
 		if IS_BB_END(i):
-			prev = bb
-			bb = BasicBlock(i.address)
-			prev.branches.append(bb)
-	return root
+			bb.end = i.address
+			blocks.append(bb)
+			
+			# Create a new basic block
+			bb = BasicBlock()
+			
+	return blocks
+
+def x86_disasm_bb_flat(data, offset, size):
+	# Create a disasm
+	md = Cs(CS_ARCH_X86, CS_MODE_32)
+	md.detail = True
+
+	bb = BasicBlock()
+
+	BB_ENDS = [X86_GRP_JUMP, X86_GRP_CALL, X86_GRP_RET, X86_GRP_IRET]
+
+	BB_END = lambda i: filter(lambda g: g in BB_ENDS, i.groups)
+	IS_BB_END = lambda i: len(BB_END(i)) > 0
+
+	blocks = []
+
+	# Disasm a bit
+	for i in md.disasm(data[offset:offset + size], offset):
+		if not bb.init:
+			bb.start = i.address
+
+		bb.instructions.append(i.mnemonic)
+
+		if IS_BB_END(i):
+			bb.end = i.address
+			blocks.append(bb)
+			
+			# Create a new basic block
+			bb = BasicBlock()
+			
+	return blocks
 
 def arm_disasm_bb_flat(data, offset, size):
 	# Create a disasm
 	md = Cs(CS_ARCH_ARM, CS_MODE_ARM)
 	md.detail = True
 
-	root = bb = BasicBlock(offset)
+	bb = BasicBlock(offset)
 
-	# Add to visit map to mitigate loops
-	visit_map.append(bb)
 	BB_ENDS = [ARM_GRP_JUMP, ARM_GRP_ENDING]
 
 	BB_END = lambda i: filter(lambda g: g in BB_ENDS, i.groups)
 	IS_BB_END = lambda i: len(BB_END(i)) > 0
 
+	blocks = []
+
 	# Disasm a bit
 	for i in md.disasm(data[offset:offset + size], offset):
-		# print dir(i)
+		if not bb.init:
+			bb.start = i.address
+
 		bb.instructions.append(i.mnemonic)
+
 		if IS_BB_END(i):
-			prev = bb
-			bb = BasicBlock(i.address)
-			prev.branches.append(bb)
-	return root
+			bb.end = i.address
+			blocks.append(bb)
+			
+			# Create a new basic block
+			bb = BasicBlock()
+
+	return blocks
 
 def arm64_disasm_bb_flat(data, offset, size):
 	# Create a disasm
 	md = Cs(CS_ARCH_ARM, CS_MODE_ARM)
 	md.detail = True
 
-	root = bb = BasicBlock(offset)
+	bb = BasicBlock(offset)
 
 	# Add to visit map to mitigate loops
 	visit_map.append(bb)
@@ -98,15 +136,22 @@ def arm64_disasm_bb_flat(data, offset, size):
 	BB_END = lambda i: filter(lambda g: g in BB_ENDS, i.groups)
 	IS_BB_END = lambda i: len(BB_END(i)) > 0
 
+	blocks = []
+
 	# Disasm a bit
 	for i in md.disasm(data[offset:offset + size], offset):
-		# print dir(i)
+		if not bb.init:
+			bb.start = i.address
+
 		bb.instructions.append(i.mnemonic)
+
 		if IS_BB_END(i):
-			prev = bb
-			bb = BasicBlock(i.address)
-			prev.branches.append(bb)
-	return root
+			bb.end = i.address
+			blocks.append(bb)
+			
+			# Create a new basic block
+			bb = BasicBlock()
+	return blocks
 
 def x64_disasm_bb(data, offset):
 	global visted_bb
@@ -207,38 +252,61 @@ def x64_disasm_bb(data, offset):
 
 	return bb
 
-def cfg_flat_instructions(bb):
-	inst = []
-
-	while len(bb.branches) > 0:
-		inst += bb.instructions
-		bb = bb.branches[0]
-	inst += bb.instructions
-
-	return inst
-
-	# Avoid loops
-	if bb.visited:
-		return inst
-
-	bb.visited = True
-	for i in bb.instructions:
-		inst.append(i)
-
-	# Merge instructions
-	for child in bb.branches:
-		inst += cfg_flat_instructions(child)
-
-	return inst
-
 ARCH_DISASM = {
 		"EM_ARM64": arm64_disasm_bb_flat,
 		"EM_ARM": arm_disasm_bb_flat,
-		"EM_X86_64": x64_disasm_bb_flat
+		"EM_X86_64": x64_disasm_bb_flat,
+		"EM_386": x86_disasm_bb_flat
 	}
 
-def cfg_build(elf):
+def _hash_instructions(block):
+	# Get flat list of BB hashes
+	s = hashlib.sha256()
+
+	for i in block.instructions:
+		s.update(i)
+
+	return s.digest()
+
+def hashes(basic_blocks):
+	hashes = []
+	
+	# Get flattened CFG hashes
+	if basic_blocks is not None:
+		for block in basic_blocks:
+			hashes.append(_hash_instructions(block))
+
+	return hashes
+
+def _bloomfilter(block):
+	# Create bloom filter to calculate the hash signature for every function
+	bloomfilter = bytearray(BLOOM_FILTER_SIZE)
+
+	# Create a list of instruction names across the CFG
+	crcs = [crc32(x) for x in block.instructions]
+
+	for crc in crcs:
+		# Set the bit offset (truncated to hash size)
+		idx = crc % (BLOOM_FILTER_SIZE * 8)
+		# print "CRC Idx: %d Bit: %d" % (idx >> 3, 1 << (idx & 0b111))
+		bloomfilter[idx >> 3] |= (1 << (idx & 0b111))
+
+	return bloomfilter
+
+def bloomfilter(basic_blocks):
+	bfilter = bytearray(BLOOM_FILTER_SIZE)
+
+	# Merge into a larger filter
+	for bloom in [ _bloomfilter(block) for block in basic_blocks ]:
+		for i in xrange(len(bloom)):
+			bfilter[i] |= bloom[i]
+
+	return bfilter
+
+def build(elffile):
 	global visit_map
+
+	elf = ELFFile(open(elffile, "rb"))
 
 	# Validate architecture support
 	if not elf.header.e_machine in ARCH_DISASM:
@@ -257,92 +325,10 @@ def cfg_build(elf):
 	elf.stream.seek(0)
 	data = elf.stream.read()
 
-	symbols_cfg = []
+	basic_blocks = []
 
 	text = get_section(elf, ".text")
 
-	symbols_cfg = [ARCH_DISASM[elf.header.e_machine](data, text.header.sh_offset, text.header.sh_size)]
+	basic_blocks = ARCH_DISASM[elf.header.e_machine](data, text.header.sh_offset, text.header.sh_size)
 
-	# print "Symbol CFG: %d" % len(symbols_cfg)
-	return symbols_cfg
-
-	# ### Building a tree takes too long for some reason. Build basic blocks linearily instead ### #
-
-	# Build basic blocks tree
-	for symbol in dynsym.iter_symbols():
-		if symbol.entry.st_value == 0 or len(symbol.name) == 0:
-			continue
-
-		# print "=" * 32 + " " + symbol.name + " " + "=" * 32
-
-		# Already validated arch support
-		symbols_cfg.append(ARCH_DISASM[elf.header.e_machine](data, symbol.entry.st_value))
-
-	return symbols_cfg
-
-def cfg_bloom(cfg_root):
-	# Create bloom filter to calculate the hash signature for every function
-	bloomfilter = bytearray(BLOOM_FILTER_SIZE)
-
-	reset_visited_bb(cfg_root)
-
-	# Create a list of instruction names across the CFG
-	hash_raw_data = cfg_flat_instructions(cfg_root)
-
-	crcs = [crc32(x) for x in hash_raw_data]
-
-	# print crcs
-	# print [hex(x) for x in crcs]
-
-	for crc in crcs:
-		# Set the bit offset (truncated to hash size)
-		idx = crc % (BLOOM_FILTER_SIZE * 8)
-		# print "CRC Idx: %d Bit: %d" % (idx >> 3, 1 << (idx & 0b111))
-		bloomfilter[idx >> 3] |= (1 << (idx & 0b111))
-
-	return bloomfilter
-
-def cfg_flatten_bb(cfg_root):
-	bbs = []
-
-	# As we're not building a tree ATM (Too time-expensive) flatten this recursion as well
-	while len(cfg_root.branches) > 0:
-		# Hash the instructions
-		s = hashlib.sha1()
-		for i in cfg_root.instructions:
-			s.update(i)
-		bbs.append(s.digest().encode("HEX"))
-
-		cfg_root = cfg_root.branches[0]
-	# Hash the last
-	s = hashlib.sha1()
-	for i in cfg_root.instructions:
-		s.update(i)
-	bbs.append(s.digest().encode("HEX"))
-
-	return bbs
-
-	# Avoid loops
-	if cfg_root.visited:
-		return bbs
-
-	# Mark this node as visited
-	cfg_root.visited = True
-
-	# Hash the instructions
-	s = hashlib.sha256()
-	for i in cfg_root.instructions:
-		s.update(i)
-	bbs.append(s.digest().encode("HEX"))
-
-	for b in cfg_root.branches:
-		bbs += cfg_flatten_bb(b)
-
-	return bbs
-
-def cfg_hashes(cfg_root):
-	# Reset path markers
-	reset_visited_bb(cfg_root)
-
-	# Get flat list of BB hashes
-	return cfg_flatten_bb(cfg_root)
+	return basic_blocks
