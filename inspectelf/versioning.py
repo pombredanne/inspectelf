@@ -60,9 +60,9 @@ class Parser(HTMLParser):
 def library_name(filename):
 	# Get the library name
 	if filename.startswith("python-"):
-		m = re.match("python-([a-zA-Z0-9]+)[-_].*", filename)
+		m = re.match("python-([a-zA-Z]+)[-_].*", filename)
 	else:
-		m = re.match("([a-zA-Z0-9]+)[-_].*", filename)
+		m = re.match("([a-zA-Z]+)[-_\.].*", filename)
 
 	if m is None:
 		return None

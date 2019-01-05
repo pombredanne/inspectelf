@@ -39,37 +39,42 @@ def build_db(root):
 			for arch in os.listdir(os.path.sep.join((root, proj, version))):
 				for candidate in os.listdir(os.path.sep.join((root, proj, version, arch))):
 					c = os.path.sep.join((root, proj, version, arch, candidate))
-					so = os.path.sep.join((c, os.listdir(c)[0]))
-					print "Processing %s" % (so)
 
-					# Get the file hash
-					with open(so, "rb") as f:
-						s = hashlib.sha256()
-						s.update(f.read())
-						h = s.digest()
+					for f in os.listdir(c):
+						so = os.path.sep.join((c, f))
+						print "Processing %s" % (so)
 
-					# Don't parse the same file again
-					if h in db[proj]:
-						print "Already in DB"
-						continue
+						# Get the file hash
+						try:
+							with open(so, "rb") as f:
+								s = hashlib.sha256()
+								s.update(f.read())
+								h = s.digest()
+						except:
+							continue
 
-					# Start parsing every candidate into DB
-					db[proj][h] = {
-						"hash": h,
-						"version": version,
-						"arch": arch,
-						"strings": set([ s for s in strings(so) ])
-						}
+						# Don't parse the same file again
+						if h in db[proj]:
+							print "Already in DB"
+							continue
 
-					# Build CFG
-					basic_blocks = cfg.build(so)
+						# Start parsing every candidate into DB
+						db[proj][h] = {
+							"hash": h,
+							"version": version,
+							"arch": arch,
+							"strings": set([ s for s in strings(so) ])
+							}
 
-					if basic_blocks is not None:
-						# Get CFG hashes
-						db[proj][h]["hashes"] = cfg.hashes(basic_blocks)
+						# Build CFG
+						basic_blocks = cfg.build(so)
 
-						# Get bloomfilter
-						db[proj][h]["bloomfilter"] = cfg.bloomfilter(basic_blocks)
+						if basic_blocks is not None:
+							# Get CFG hashes
+							db[proj][h]["hashes"] = cfg.hashes(basic_blocks)
+
+							# Get bloomfilter
+							db[proj][h]["bloomfilter"] = cfg.bloomfilter(basic_blocks)
 	db.close()
 
 def _set_similarity(library, parameter, target_set):
@@ -82,6 +87,7 @@ def _set_similarity(library, parameter, target_set):
 
 		# Check if there is any metadata for this parameter
 		if parameter not in instance:
+			print "No %s for library" % parameter
 			continue
 
 		ratio = len(set.intersection(set(instance[parameter]), set(target_set))) / float(len(set.union(set(instance[parameter]), set(target_set))))
@@ -117,20 +123,13 @@ def _cfg_bloomfilter_similarity(library, bloomfilter):
 		if count > highest_count:
 			highest_count = count
 			highest_instance = instance
+	if popcount == 0:
+		return (None, 0)
 
 	return (highest_instance, float(highest_count) / float(popcount))
 
-def similarity(elffile):
+def _libname_similarity(elffile, libname):
 	db = Shove("file://db")
-
-	libname = library_name(os.path.basename(elffile))
-
-	if libname is None:
-		raise Exception("Unsupported library name")
-
-	# Library not indexed! 
-	if libname not in db:
-		return None
 
 	# Start by finding an exact match
 	with open(elffile, "rb") as f:
@@ -145,7 +144,11 @@ def similarity(elffile):
 	similarities = []
 
 	# String similarity
-	similarities.append(_set_similarity(db[libname], "strings", [ s for s in strings(elffile) ]))
+	str_similarity = _set_similarity(db[libname], "strings", [ s for s in strings(elffile) ])
+
+	if str_similarity[0] is not None:
+		print libname, str_similarity[1]
+		similarities.append(str_similarity)
 
 	# CFG Similarity
 	blocks = cfg.build(elffile)
@@ -194,6 +197,35 @@ def similarity(elffile):
 
 	return {"libname": libname, "instance": highest_instance, "ratio": highest_ratio}
 
+def similarity(elffile):
+	db = Shove("file://db")
+
+	libname = library_name(os.path.basename(elffile))
+
+	if libname is None:
+		raise Exception("Unsupported library name")
+
+	# Library not indexed! 
+	if libname in db:
+		return _libname_similarity(elffile, libname)
+
+	highest_ratio = 0
+	highest_result = 0
+
+	# Try to find what's the actual library is
+	for libname in db.keys():
+		result = _libname_similarity(elffile, libname)
+
+		if result["ratio"] > highest_ratio:
+			highest_ratio = result["ratio"]
+			highest_result = result
+
+	db.close()
+
+	return result
+
+	
+
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser()
 	parser.add_argument("mode", help = "[scan|identify] to either scan or identify libraries")
@@ -204,6 +236,9 @@ if __name__ == "__main__":
 		build_db(args.path)
 	elif args.mode == "identify":
 		result = similarity(args.path)
-		print "%s v%s (%f)" % (result["libname"], result["instance"]["version"], result["ratio"])
+		if result is not None:
+			print "%s v%s (%f)" % (result["libname"], result["instance"]["version"], result["ratio"])
+		else:
+			print "No matching result"
 	else:
 		print "Invalid mode"

@@ -97,7 +97,7 @@ def arm_disasm_bb_flat(data, offset, size):
 	md = Cs(CS_ARCH_ARM, CS_MODE_ARM)
 	md.detail = True
 
-	bb = BasicBlock(offset)
+	bb = BasicBlock()
 
 	BB_ENDS = [ARM_GRP_JUMP, ARM_GRP_ENDING]
 
@@ -127,7 +127,7 @@ def arm64_disasm_bb_flat(data, offset, size):
 	md = Cs(CS_ARCH_ARM, CS_MODE_ARM)
 	md.detail = True
 
-	bb = BasicBlock(offset)
+	bb = BasicBlock()
 
 	# Add to visit map to mitigate loops
 	visit_map.append(bb)
@@ -166,7 +166,7 @@ def x64_disasm_bb(data, offset):
 			# print "Already was here (0x%x)" % offset
 			return prev
 
-	bb = BasicBlock(offset)
+	bb = BasicBlock()
 
 	# Add to visit map to mitigate loops
 	visit_map.append(bb)
@@ -310,7 +310,6 @@ def build(elffile):
 
 	# Validate architecture support
 	if not elf.header.e_machine in ARCH_DISASM:
-		print "No supported arch"
 		return None
 
 	# print "Building CFG!!!"
