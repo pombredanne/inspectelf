@@ -190,6 +190,7 @@ def download_versions(projname, versions):
 			# Setup architecture folder
 			arch = ["amd64", "i386", "armel", "armhf", "arm64", "powerpc", "ppc64el", "s390x"]
 			found_arch = False
+			afound = False
 
 			for a in arch:
 				if b["link"].endswith("".join((a, ".deb"))):
@@ -225,7 +226,10 @@ def download_versions(projname, versions):
 
 			# Extract files
 			if extract(archive, basepath, libdl):
-				dfound = vfound = True
+				afound = dfound = vfound = True
+
+			if not afound:
+				shutil.rmtree(archpath)
 
 		if not vfound:
 			shutil.rmtree(vpath)
