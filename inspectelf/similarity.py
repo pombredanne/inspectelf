@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python2.7
 
 from elftools.elf.elffile import ELFFile
 from shove import Shove
@@ -63,7 +63,7 @@ def build_db(root):
 							"hash": h,
 							"version": version,
 							"arch": arch,
-							"strings": set([ s for s in strings(so) ])
+							"strings": [ s for s in strings(so) ]
 							}
 
 						# Build CFG
@@ -224,7 +224,51 @@ def similarity(elffile):
 
 	return result
 
-	
+def learn(name, strings, version):
+	db = Shove("file://db")
+
+	s = hashlib.sha256()
+	s.update(strings)
+	h = s.digest()
+
+	db[name][h] = {
+			"hash": h,
+			"version": version,
+			"arch": None,
+			"strings": strings
+		}
+
+	db.close()
+
+def _check(_db, strings, name):
+	# Find similarity
+	instance, ratio = _set_similarity(_db[name], "strings", strings)
+
+	return { "library": instance, "ratio": ratio }
+
+def check(strings, name = None):
+	db = Shove("file://db")
+
+	# Find similarity with a particular library name
+	if name is not None
+		sim = _check(strings, name)
+
+		db.close()
+
+		return sim
+
+	# If name is not given, search the entire DB
+	highest = None
+
+	for n in db.keys():
+		sim = _check(strings, n)
+
+		if (highest is None) or (sim["ratio"] > highest["ratio"]):
+			highest = sim
+
+	db.close()
+
+	return highest["library"]
 
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser()

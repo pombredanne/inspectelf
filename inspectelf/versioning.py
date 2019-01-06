@@ -1,8 +1,8 @@
 #!/usr/bin/python
 
+import json
 import pprint
 import argparse
-from string_cmp import read_strings
 import re
 import os
 import magic
@@ -15,7 +15,6 @@ import gzip
 import shutil
 import arpy
 from HTMLParser import HTMLParser
-from string_cmp import strings
 
 # For xz
 try:
@@ -71,9 +70,20 @@ def library_name(filename):
 	return m.groups()[0]
 
 def dissect_links(links):
+	global dldb
+
 	libraries = {}
 
+	if "cache" not in dldb.keys():
+		print "Reset DB"
+		dldb["cache"] = []
+
 	for link in links:
+		# Don't download anything that's already been downloaded.
+		if link in dldb["cache"]:
+			print "Already parsed: %s" % link
+			continue
+
 		# Get the filename to be downloaded
 		filename = link[link.rfind('/') + 1:]
 
@@ -115,12 +125,9 @@ def extract(archive, basepath, libdl):
 			datapath = os.path.sep.join((basepath, n))
 
 			# Extract xz
-			#with gzip.open(datapath, 'rb') as gz:
-			#	data = gz.read()
 			xz = lzma.open(datapath)
 
 			# Read decompressed content
-			# print dir(xz)
 			data = xz.read()
 
 			with tempfile.NamedTemporaryFile() as f:
@@ -137,7 +144,6 @@ def extract(archive, basepath, libdl):
 						localpath = os.path.sep.join([basepath, tarname])
 
 						if "application/x-sharedlib" not in magnum.id_filename(localpath):
-							# print tarname, magnum.id_filename(localpath)
 							os.unlink(localpath)
 							continue
 
@@ -228,6 +234,11 @@ def download_versions(projname, versions):
 			if extract(archive, basepath, libdl):
 				afound = dfound = vfound = True
 
+			# Mark that this download was already processed
+			dldb["cache"].append(b["link"])
+			with open("dldb", "wb") as f:
+				json.dump(dldb, f)
+
 			if not afound:
 				shutil.rmtree(archpath)
 
@@ -252,6 +263,12 @@ def versions(url):
 		download_versions(libname, libraries[libname])
 
 if __name__ == "__main__":
+	if os.path.exists("dldb"):
+		with open("dldb", "rb") as f:
+			dldb = json.load(f)
+	else:
+		dldb = {}
+
 	magnum = magic.Magic(flags = magic.MAGIC_MIME)
 
 	parser = argparse.ArgumentParser()
@@ -266,3 +283,4 @@ if __name__ == "__main__":
 		print e
 	finally:
 		magnum.close()
+		dldb.close()
