@@ -6,8 +6,6 @@ import re
 from elftools.elf.elffile import ELFFile
 from capstone import *
 
-print "0x409130"
-
 def import_funcs(elffile):
 	elf = ELFFile(open(elffile, "rb"))
 
@@ -17,15 +15,11 @@ def import_funcs(elffile):
 		raise Exception("No .text section found")
 
 	plt = elf.get_section_by_name(".plt")
-	print dir(plt)
 
 	if plt is None:
 		raise Exception("No .plt section in file")
-	print plt.header
 
 	plt_offset = text.header.sh_offset - plt.header.sh_offset
-
-	print "PLT Offset: 0x%x" % plt.header.sh_addr
 
 	rela_plt = elf.get_section_by_name(".rela.plt")
 
