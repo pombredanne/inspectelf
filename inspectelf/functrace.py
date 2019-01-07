@@ -6,8 +6,6 @@ import re
 from elftools.elf.elffile import ELFFile
 from capstone import *
 
-print "0x409130"
-
 def import_funcs(elffile):
 	elf = ELFFile(open(elffile, "rb"))
 
@@ -17,20 +15,20 @@ def import_funcs(elffile):
 		raise Exception("No .text section found")
 
 	plt = elf.get_section_by_name(".plt")
-	print dir(plt)
 
 	if plt is None:
 		raise Exception("No .plt section in file")
-	print plt.header
 
 	plt_offset = text.header.sh_offset - plt.header.sh_offset
 
-	print "PLT Offset: 0x%x" % plt.header.sh_addr
+	# print "PLT Offset: 0x%x" % plt.header.sh_addr
 
 	rela_plt = elf.get_section_by_name(".rela.plt")
 
 	if rela_plt is None:
-		raise Exception("No .rela.plt relocation section in file")
+		rela_plt = elf.get_section_by_name(".rel.plt")
+		if rela_plt is None:
+			raise Exception("No .rel[a].plt relocation section in file")
 
 	symtab = elf.get_section_by_name(".dynsym")
 
@@ -39,13 +37,22 @@ def import_funcs(elffile):
 
 	# Relocs index start from 1 somehow :S
 	idx = 1
+	startoff = 0
+
+	# Per architecture mods
+	if elf.header.e_machine == "EM_ARM":
+		if plt.header.sh_entsize == 0:
+			plt.header.sh_entsize = 12
+			startoff = 8
+
 	relocs = []
 
 	for reloc in rela_plt.iter_relocations():
 		relocs.append({
 				"name": symtab.get_symbol(reloc.entry.r_info_sym).name,
-				"offset": plt.header.sh_addr + plt.header.sh_entsize * idx,
-				"reloc": reloc
+				"offset": plt.header.sh_addr + startoff + plt.header.sh_entsize * idx,
+				"reloc": reloc,
+				"index": idx
 			})
 
 		idx += 1
@@ -77,7 +84,7 @@ def import_match(elffile, names):
 		for p in patterns:
 			if p.match(i["name"]) is not None:
 				#print hex(i["offset"]), "(%s)\t" % hex(i["reloc"].entry.r_info_sym), i["name"]
-				print hex(i["offset"]), "\t", i["name"]
+				print hex(i["offset"]), " (%d)\t" % i["index"], i["name"]
 				found.append(i)
 
 				break
@@ -91,7 +98,16 @@ def find_usages(elffile, imports):
 	if text is None:
 		raise Exception("No .text section found")
 
-	md = Cs(CS_ARCH_X86, CS_MODE_64)
+	if elf.header.e_machine == "EM_X86_64":
+		arch = CS_ARCH_X86
+		mode = CS_MODE_64
+		mnemonic = "call"
+	elif elf.header.e_machine == "EM_ARM":
+		arch = CS_ARCH_ARM
+		mode = CS_MODE_ARM
+		mnemonic = "bl"
+
+	md = Cs(arch, mode)
 
 	offset_map = {}
 	offsets = []
@@ -100,9 +116,14 @@ def find_usages(elffile, imports):
 		offsets.append(x["offset"])
 		offset_map[x["offset"]] = x["name"]
 
-	for i in md.disasm(text.data(), elf.header.e_entry):
+	md.skipdata = True
+
+	#for i in md.disasm(text.data(), elf.header.e_entry):
+	for i in md.disasm(text.data(), text.header.sh_addr):
+		# if i.address == 0x7810c:
 		# print hex(i.address), i.mnemonic, i.op_str
-		if i.mnemonic == "call":
+
+		if i.mnemonic == mnemonic:
 			for offset in offsets:
 				if hex(offset) in i.op_str:
 					print "0x%x: Call to %s@plt" % (i.address, offset_map[offset])

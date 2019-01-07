@@ -14,6 +14,9 @@ import tempfile
 import gzip
 import shutil
 import arpy
+from tempfile import *
+from rpm2cpio import *
+from libarchive import *
 from HTMLParser import HTMLParser
 
 # For xz
@@ -42,7 +45,7 @@ class Parser(HTMLParser):
 				if url[0] != '/' and url[-1] == '/' and url.startswith("lib"):
 					self.subdirs.append(os.path.sep.join((self.baseurl, url)))
 
-				if not url.endswith(".deb"):
+				if not url.endswith(".deb") and not url.endswith(".rpm"):
 					continue
 
 				p = re.compile('(?:http.*://)?(?P<host>[^:/ ]+).?(?P<port>[0-9]*).*')
@@ -108,8 +111,7 @@ def dissect_links(links):
 
 	return libraries
 
-def extract(archive, basepath, libdl):
-	print "Extracting", archive
+def extract_deb(archive, basepath, libdl):
 	found = False
 	arch = arpy.Archive(archive)
 	arch.read_all_headers()
@@ -172,6 +174,69 @@ def extract(archive, basepath, libdl):
 
 	return found
 
+def extract_rpm(archive, basepath, libdl):
+	found = False
+	with open(archive, "rb") as f:
+		with TemporaryFile() as t:
+			# Convert to CPIO
+			rpm2cpio(f, t)
+
+			# Rewind to start
+			t.seek(0)
+
+			# Parse file
+			a = Archive(t)
+
+			for p in a.iterpaths():
+				if p.endswith(".so") or p.endswith(".a") or ".so." in p:
+					dirs = os.path.dirname(p)
+
+					# Check if path exists before creating it
+					if not os.path.exists("./%s" % dirs):
+						os.makedirs("./%s" % dirs)
+
+					# Extract
+					a.readpath(p)
+
+					# Remove side effects
+					if os.path.exists("./%s" % os.path.basename(p)):
+						shutil.rmtree("./%s" % os.path.basename(p))
+
+					if "application/x-sharedlib" not in magnum.id_filename("./%s" % p):
+						os.unlink(p)
+						shutil.rmtree("./usr/")
+						continue
+
+					print "Found: %s" % p
+
+					print "Moving to %s" % os.path.sep.join([libdl, os.path.basename(p)])
+
+					os.rename("./%s" % p, os.path.sep.join([libdl, os.path.basename(p)]))
+
+					shutil.rmtree("./usr/")
+
+					found = True
+
+	# Erase all working directories
+	if not found:
+		print "Removing %s" % libdl
+		shutil.rmtree(libdl)
+	else:
+		print "Removing %s" % basepath
+		shutil.rmtree(basepath)
+
+	return found
+
+def extract(archive, basepath, libdl):
+	print "Extracting", archive
+
+	if archive.endswith(".deb"):
+		return extract_deb(archive, basepath, libdl)
+	elif archive.endswith(".rpm"):
+		return extract_rpm(archive, basepath, libdl)
+	else:
+		raise Exception("Unsupported file type")
+
 def download_versions(projname, versions):
 	if not os.path.exists("dl"):
 		os.mkdir("dl")
@@ -189,17 +254,15 @@ def download_versions(projname, versions):
 		if not os.path.exists(vpath):
 			os.mkdir(vpath)
 
-		for b in versions[v]:
-			if not b["link"].endswith(".deb"):
-				continue
+		afound = False
 
+		for b in versions[v]:
 			# Setup architecture folder
-			arch = ["amd64", "i386", "armel", "armhf", "arm64", "powerpc", "ppc64el", "s390x"]
+			arch = ["amd64", "i386", "armel", "armhf", "aarch64", "arm64", "powerpc", "ppc64el", "s390x"]
 			found_arch = False
-			afound = False
 
 			for a in arch:
-				if b["link"].endswith("".join((a, ".deb"))):
+				if b["link"].endswith("".join((a, ".deb"))) or b["link"].endswith("".join((a, ".rpm"))):
 					archpath = os.path.sep.join((projpath, v, a))
 					found_arch = True
 					break
@@ -253,8 +316,11 @@ def versions(url):
 	data = u.read()
 	parser = Parser(url)
 	parser.feed(data)
+
 	for subdir in parser.subdirs:
 		versions(subdir)
+
+	print "Found %d suitable packages" % len(parser.links)
 
 	libraries = dissect_links(parser.links)
 
@@ -283,4 +349,3 @@ if __name__ == "__main__":
 		print e
 	finally:
 		magnum.close()
-		dldb.close()
