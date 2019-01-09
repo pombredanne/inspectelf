@@ -14,9 +14,10 @@ import string
 import hashlib
 import cfg
 import json
+from glob import glob
 from versioning import library_name
 from ignores import *
-
+from cstrings import clang_strings
 
 def strings(filename, min=4):
 	# with open(filename, errors="ignore") as f:  # Python 3.x
@@ -32,6 +33,65 @@ def strings(filename, min=4):
 		if len(result) >= min and result not in ignore_strings:  # catch result at EOF
 			yield result
 
+def _process_library(db, proj, version, arch, candidate):
+	for f in os.listdir(candidate):
+		so = os.path.sep.join((candidate, f))
+		print "Processing %s" % (so)
+
+		# Get the file hash
+		try:
+			with open(so, "rb") as f:
+				s = hashlib.sha256()
+				s.update(f.read())
+				h = s.digest().encode("hex")
+		except:
+			continue
+
+		# Don't parse the same file again
+		if h in db[proj]:
+			print "Already in DB."
+
+			# Fix version info as it's usually better the 2nd time
+			if len(version) > db[proj][h]["version"]:
+				db[proj][h]["version"] = version
+				db.sync()
+
+			continue
+
+		# Start parsing every candidate into DB
+		db[proj][h] = {
+			"hash": h,
+			"version": version,
+			"arch": arch,
+			"strings": [ s for s in strings(so) ]
+			}
+
+		# Write to DB so we won't lose any data
+		db.sync()
+
+		# Build CFG
+		basic_blocks = cfg.build(so)
+
+		if basic_blocks is not None:
+			# Get CFG hashes
+			db[proj][h]["hashes"] = cfg.hashes(basic_blocks)
+
+			# Get bloomfilter
+			db[proj][h]["bloomfilter"] = cfg.bloomfilter(basic_blocks)
+
+		db.sync()
+
+def _process_src(db, proj, version, srcpath):
+	# List all files in directory
+	files = [y for x in os.walk(srcpath) for y in glob(os.path.join(x[0], '*'))]
+
+	strs = []
+
+	for f in files:
+		clang_strings(f)
+
+	print files
+
 def build_db(root):
 	db = Shufel("file://db")
 
@@ -46,52 +106,10 @@ def build_db(root):
 				for candidate in os.listdir(os.path.sep.join((root, proj, version, arch))):
 					c = os.path.sep.join((root, proj, version, arch, candidate))
 
-					for f in os.listdir(c):
-						so = os.path.sep.join((c, f))
-						print "Processing %s" % (so)
-
-						# Get the file hash
-						try:
-							with open(so, "rb") as f:
-								s = hashlib.sha256()
-								s.update(f.read())
-								h = s.digest().encode("hex")
-						except:
-							continue
-
-						# Don't parse the same file again
-						if h in db[proj]:
-							print "Already in DB."
-
-							# Fix version info as it's usually better the 2nd time
-							if len(version) > db[proj][h]["version"]:
-								db[proj][h]["version"] = version
-								db.sync()
-
-							continue
-
-						# Start parsing every candidate into DB
-						db[proj][h] = {
-							"hash": h,
-							"version": version,
-							"arch": arch,
-							"strings": [ s for s in strings(so) ]
-							}
-
-						# Write to DB so we won't lose any data
-						db.sync()
-
-						# Build CFG
-						basic_blocks = cfg.build(so)
-
-						if basic_blocks is not None:
-							# Get CFG hashes
-							db[proj][h]["hashes"] = cfg.hashes(basic_blocks)
-
-							# Get bloomfilter
-							db[proj][h]["bloomfilter"] = cfg.bloomfilter(basic_blocks)
-
-						db.sync()
+					if arch == "src":
+						_process_src(db, proj, version, c)
+					else:
+						_process_library(db, proj, version, arch, c)
 	db.close()
 
 def _set_similarity(library, parameter, target_set):
