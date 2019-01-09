@@ -1,7 +1,11 @@
 #!/usr/bin/python2.7
 
 from elftools.elf.elffile import ELFFile
+#from shufel import Shufel
+
 from shove import Shove
+Shufel = Shove
+
 import itertools
 import operator
 import argparse
@@ -9,8 +13,10 @@ import os
 import string
 import hashlib
 import cfg
+import json
 from versioning import library_name
 from ignores import *
+
 
 def strings(filename, min=4):
 	# with open(filename, errors="ignore") as f:  # Python 3.x
@@ -27,7 +33,7 @@ def strings(filename, min=4):
 			yield result
 
 def build_db(root):
-	db = Shove("file://db")
+	db = Shufel("file://db")
 
 	# First directory heirarchy holds project names
 	for proj in os.listdir(root):
@@ -49,13 +55,19 @@ def build_db(root):
 							with open(so, "rb") as f:
 								s = hashlib.sha256()
 								s.update(f.read())
-								h = s.digest()
+								h = s.digest().encode("hex")
 						except:
 							continue
 
 						# Don't parse the same file again
 						if h in db[proj]:
-							print "Already in DB"
+							print "Already in DB."
+
+							# Fix version info as it's usually better the 2nd time
+							if len(version) > db[proj][h]["version"]:
+								db[proj][h]["version"] = version
+								db.sync()
+
 							continue
 
 						# Start parsing every candidate into DB
@@ -66,6 +78,9 @@ def build_db(root):
 							"strings": [ s for s in strings(so) ]
 							}
 
+						# Write to DB so we won't lose any data
+						db.sync()
+
 						# Build CFG
 						basic_blocks = cfg.build(so)
 
@@ -75,6 +90,8 @@ def build_db(root):
 
 							# Get bloomfilter
 							db[proj][h]["bloomfilter"] = cfg.bloomfilter(basic_blocks)
+
+						db.sync()
 	db.close()
 
 def _set_similarity(library, parameter, target_set):
@@ -129,7 +146,7 @@ def _cfg_bloomfilter_similarity(library, bloomfilter):
 	return (highest_instance, float(highest_count) / float(popcount))
 
 def _libname_similarity(elffile, libname):
-	db = Shove("file://db")
+	db = Shufel("file://db")
 
 	# Start by finding an exact match
 	with open(elffile, "rb") as f:
@@ -182,7 +199,7 @@ def _libname_similarity(elffile, libname):
 		results[sim[0]["hash"]].append(sim)
 
 	highest_ratio = 0
-	highest_instnace = 0
+	highest_instnace = None
 
 	# Find what instance is the most similar
 	for h in results:
@@ -191,22 +208,23 @@ def _libname_similarity(elffile, libname):
 
 		if ratio > highest_ratio:
 			highest_ratio = ratio
-			highest_instance = db[libname][h]
+			highest_instnace = db[libname][h]
 
 	db.close()
 
-	return {"libname": libname, "instance": highest_instance, "ratio": highest_ratio}
+	return {"libname": libname, "instance": highest_instnace, "ratio": highest_ratio}
 
 def similarity(elffile):
-	db = Shove("file://db")
+	db = Shufel("file://db")
 
 	libname = library_name(os.path.basename(elffile))
 
 	if libname is None:
 		raise Exception("Unsupported library name")
 
-	# Library not indexed! 
-	if libname in db:
+	# Library not indexed!
+	if libname in db and len(db[libname].keys()) > 0:
+		print "Checking with %s" % libname
 		return _libname_similarity(elffile, libname)
 
 	highest_ratio = 0
@@ -214,6 +232,7 @@ def similarity(elffile):
 
 	# Try to find what's the actual library is
 	for libname in db.keys():
+		print "Checking with %s" % libname
 		result = _libname_similarity(elffile, libname)
 
 		if result["ratio"] > highest_ratio:
@@ -221,11 +240,10 @@ def similarity(elffile):
 			highest_result = result
 
 	db.close()
-
 	return result
 
 def learn(name, strings, version):
-	db = Shove("file://db")
+	db = Shufel("file://db")
 
 	s = hashlib.sha256()
 	s.update(strings)
@@ -238,6 +256,7 @@ def learn(name, strings, version):
 			"strings": strings
 		}
 
+	db.sync()
 	db.close()
 
 def _check(_db, strings, name):
@@ -247,13 +266,11 @@ def _check(_db, strings, name):
 	return { "library": instance, "ratio": ratio }
 
 def check(strings, name = None):
-	db = Shove("file://db")
+	db = Shufel("file://db")
 
 	# Find similarity with a particular library name
-	if name is not None
+	if name is not None:
 		sim = _check(strings, name)
-
-		db.close()
 
 		return sim
 
@@ -267,7 +284,6 @@ def check(strings, name = None):
 			highest = sim
 
 	db.close()
-
 	return highest["library"]
 
 if __name__ == "__main__":

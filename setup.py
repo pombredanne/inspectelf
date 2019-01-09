@@ -8,5 +8,11 @@ setup(name='inspectelf',
       author_email='',
       license='',
       packages=['inspectelf'],
-      install_requires=['capstone', 'pyelftools'],
+      install_requires=['capstone',
+      			'pyelftools',
+      			'shove',
+      			'filemagic',
+      			'arpy',
+      			'backports.lzma'
+      ],
       zip_safe=False)

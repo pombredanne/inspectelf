@@ -1,5 +1,6 @@
 #!/usr/bin/python
 
+import traceback
 import json
 import pprint
 import argparse
@@ -18,6 +19,9 @@ from tempfile import *
 from rpm2cpio import *
 from libarchive import *
 from HTMLParser import HTMLParser
+# from shufel import Shufel
+from shove import Shove
+Shufel = Shove
 
 # For xz
 try:
@@ -25,12 +29,15 @@ try:
 except:
 	from backports import lzma
 
+src_pkgs = ["xz", "gz"]
+# src_pkgs = []
+extensions = ["rpm", "deb"] + src_pkgs
+
 class Parser(HTMLParser):
 	def __init__(self, baseurl):
 		HTMLParser.__init__(self)
 		self.links = []
 		self.subdirs = []
-		self.extensions = ["dsc", "deb", "xz", "gz", "tar", "debian"]
 		self.baseurl = baseurl
 
 	def handle_starttag(self, tag, attrs):
@@ -45,7 +52,13 @@ class Parser(HTMLParser):
 				if url[0] != '/' and url[-1] == '/' and url.startswith("lib"):
 					self.subdirs.append(os.path.sep.join((self.baseurl, url)))
 
-				if not url.endswith(".deb") and not url.endswith(".rpm"):
+				should_download = False
+				for ext in extensions:
+					if url.endswith(".%s" % ext):
+						should_download = True
+						break
+
+				if not should_download:
 					continue
 
 				p = re.compile('(?:http.*://)?(?P<host>[^:/ ]+).?(?P<port>[0-9]*).*')
@@ -65,6 +78,10 @@ def library_name(filename):
 		m = re.match("python-([a-zA-Z]+)[-_].*", filename)
 	else:
 		m = re.match("([a-zA-Z]+)[-_\.].*", filename)
+
+		if m is None:
+			m = re.match("([a-zA-Z]+)[0-9].*", filename)
+
 
 	if m is None:
 		return None
@@ -99,15 +116,27 @@ def dissect_links(links):
 		if libname not in libraries:
 			libraries[libname] = {}
 
-		patterns = [".+[\-_](\d+\.\d+\.\d+[a-z]?).*", ".+[\-_](\d+\.\d+).*"]
-		for p in patterns:
-			m = re.match(p, filename)
-			if m is not None:
-				v = m.groups()[0]
-				if v not in libraries[libname]:
-					libraries[libname][v] = []
+		if libname == "openssl" or libname == "libssl" or libname == "libcrypto":
+			# print filename
+			m = re.match(".+(\d\.\d\.\d[a-z]).*" , filename)
 
-				libraries[libname][v].append({"libname": filename, "link": link})
+			if m is None:
+				m = re.match(".+(\d\.\d\.\d).*" , filename)
+
+			v = m.groups()[0]
+		else:
+			# Pattern \d+\.\d+\.\d+ might fish dates from time to time X_X
+			patterns = [".+[\-_](\d+\.\d+\.\d+[a-z]?).*", ".+[\-_](\d+\.\d+\.\d+).*", ".+[\-_](\d+\.\d+).*"]
+			for p in patterns:
+				m = re.match(p, filename)
+				if m is not None:
+					v = m.groups()[0]
+					break
+
+		if v not in libraries[libname]:
+			libraries[libname][v] = []
+
+		libraries[libname][v].append({"libname": filename, "link": link})
 
 	return libraries
 
@@ -227,6 +256,65 @@ def extract_rpm(archive, basepath, libdl):
 
 	return found
 
+def extract_src_tar(tardata, basepath, libdl):
+	src_ext = ["c", "cpp", "h", "hpp", "cc"]
+	found = False
+
+	with tempfile.NamedTemporaryFile() as f:
+		# Write and reset caret
+		f.write(tardata)
+		f.seek(0)
+
+		# Create temporary file
+		t = tarfile.open(f.name)
+		for tarname in t.getnames():
+			#print tarname
+			# Extract ALL SOURCE FILES:
+			extfound = False
+			for ext in src_ext:
+				if tarname.endswith(".%s" % ext):
+					extfound = True
+					break
+
+			if not extfound:
+				continue
+
+			print os.path.sep.join((basepath, tarname))
+			t.extract(tarname, basepath)
+			basedir = tarname.split('/')[0]
+			found = True
+
+	if found:
+		print "Found. Renaming %s -> %s ..." % (os.path.sep.join((basepath, basedir)), os.path.sep.join((libdl, basedir)))
+		shutil.move(os.path.sep.join((basepath, basedir)), os.path.sep.join((libdl, basedir)))
+
+	return found
+
+def extract_src(archive, basepath, libdl):
+	print "Source package"
+	found = False
+
+	if archive.endswith(".xz"):
+		# Extract xz
+		xz = lzma.open(archive)
+
+		# Read decompressed content
+		found = extract_src_tar(xz.read(), basepath, libdl)
+
+	elif archive.endswith(".gz"):
+		with gzip.open(archive, "rb") as f:
+			found = extract_src_tar(f.read(), basepath, libdl)
+
+	# Erase all working directories
+	if not found:
+		print "Removing %s" % libdl
+		shutil.rmtree(libdl)
+	else:
+		print "Removing %s" % basepath
+		shutil.rmtree(basepath)
+
+	return found
+
 def extract(archive, basepath, libdl):
 	print "Extracting", archive
 
@@ -235,6 +323,10 @@ def extract(archive, basepath, libdl):
 	elif archive.endswith(".rpm"):
 		return extract_rpm(archive, basepath, libdl)
 	else:
+		for ext in src_pkgs:
+			if archive.endswith(".%s" % ext):
+				return extract_src(archive, basepath, libdl)
+
 		raise Exception("Unsupported file type")
 
 def download_versions(projname, versions):
@@ -260,10 +352,17 @@ def download_versions(projname, versions):
 			# Setup architecture folder
 			arch = ["amd64", "i386", "armel", "armhf", "aarch64", "arm64", "powerpc", "ppc64el", "s390x"]
 			found_arch = False
+			archpath = os.path.sep.join((projpath, v, "src"))
 
 			for a in arch:
-				if b["link"].endswith("".join((a, ".deb"))) or b["link"].endswith("".join((a, ".rpm"))):
+				if b["link"][:b["link"].rfind(".")].endswith(a):
 					archpath = os.path.sep.join((projpath, v, a))
+					found_arch = True
+					break
+
+			# Check if it's a source package
+			for ext in src_pkgs:
+				if b["link"].endswith(ext):
 					found_arch = True
 					break
 
@@ -273,7 +372,7 @@ def download_versions(projname, versions):
 			if not os.path.exists(archpath):
 				os.mkdir(archpath)
 
-			# Get download path as the deb arch
+			# Get download path as the pkg arch
 			libdl = os.path.sep.join((archpath, b["libname"]))
 
 			# Check if directory exists
@@ -299,8 +398,8 @@ def download_versions(projname, versions):
 
 			# Mark that this download was already processed
 			dldb["cache"].append(b["link"])
-			with open("dldb", "wb") as f:
-				json.dump(dldb, f)
+
+			dldb.sync()
 
 			if not afound:
 				shutil.rmtree(archpath)
@@ -329,11 +428,7 @@ def versions(url):
 		download_versions(libname, libraries[libname])
 
 if __name__ == "__main__":
-	if os.path.exists("dldb"):
-		with open("dldb", "rb") as f:
-			dldb = json.load(f)
-	else:
-		dldb = {}
+	dldb = Shufel("file://dldb")
 
 	magnum = magic.Magic(flags = magic.MAGIC_MIME)
 
@@ -345,7 +440,7 @@ if __name__ == "__main__":
 		args = parser.parse_args()
 
 		versions(args.url)
-	except Exception as e:
-		print e
+#	except Exception as e:
+#		print e
 	finally:
 		magnum.close()
