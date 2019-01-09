@@ -6,9 +6,9 @@ from ignores import ignore_strings
 
 # Fix clang binding path
 clang.cindex.Config.set_library_file("/usr/lib/x86_64-linux-gnu/libclang-5.0.so.1")
-for x in dir(clang.cindex.CursorKind):
-	if "method" in x.lower() or "func" in x.lower():
-		print x
+#for x in dir(clang.cindex.CursorKind):
+#	if "method" in x.lower() or "func" in x.lower():
+#		print x
 
 def _cstrings(node):
 	strs = []
@@ -32,7 +32,8 @@ def _cfuncs(node):
 
 	return funcs
 
-def clang_strings(filename):
+def clang_parse(filename):
+	print "CLANG %s" % filename
 	index = clang.cindex.Index.create()
 	tu = index.parse(filename)
 

@@ -17,7 +17,7 @@ import json
 from glob import glob
 from versioning import library_name
 from ignores import *
-from cstrings import clang_strings
+from cstrings import clang_parse
 
 def strings(filename, min=4):
 	# with open(filename, errors="ignore") as f:  # Python 3.x
@@ -88,9 +88,14 @@ def _process_src(db, proj, version, srcpath):
 	strs = []
 
 	for f in files:
-		clang_strings(f)
+		if os.path.isdir(f):
+			continue
 
-	print files
+		res = clang_parse(f)
+		strs += res["strings"] + res["functions"]
+
+	# Add to db
+	learn(proj, strs, version)
 
 def build_db(root):
 	db = Shufel("file://db")
@@ -264,7 +269,7 @@ def learn(name, strings, version):
 	db = Shufel("file://db")
 
 	s = hashlib.sha256()
-	s.update(strings)
+	s.update("".join(strings))
 	h = s.digest()
 
 	db[name][h] = {
