@@ -106,6 +106,10 @@ def find_usages(elffile, imports):
 		arch = CS_ARCH_ARM
 		mode = CS_MODE_ARM
 		mnemonic = "bl"
+	elif elf.header.e_machine == "EM_AARCH64":
+		arch = CS_ARCH_ARM64
+		mode = CS_MODE_ARM
+		mnemonic = "bl"
 
 	md = Cs(arch, mode)
 
@@ -128,6 +132,135 @@ def find_usages(elffile, imports):
 				if hex(offset) in i.op_str:
 					print "0x%x: Call to %s@plt" % (i.address, offset_map[offset])
 
+def find_functions_aarch64(section, found_funcs):
+	md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
+
+	md.skipdata = True
+
+	# Start with first address of section
+	addresses = [section.header.sh_addr]
+
+	functions = {}
+	expected_functions = []
+
+	branches = [
+			{"mnemonic": "b", "arg": "#(0x[0-9a-f]+)"},
+			{"mnemonic": "b.ls", "arg": "#(0x[0-9a-f]+)"},
+			{"mnemonic": "b.ne", "arg": "#(0x[0-9a-f]+)"},
+			{"mnemonic": "b.cs", "arg": "#(0x[0-9a-f]+)"},
+			{"mnemonic": "b.eq", "arg": "#(0x[0-9a-f]+)"},
+			{"mnemonic": "b.hi", "arg": "#(0x[0-9a-f]+)"},
+			{"mnemonic": "b.cc", "arg": "#(0x[0-9a-f]+)"},
+	 		{"mnemonic": "cbz", "arg": "x[0-9]+, #(0x[0-9a-f]+)"},
+	 		{"mnemonic": "tbz", "arg": "[rw][0-9], #x[0-9]+, #(0x[0-9a-f]+)"}
+	 	]
+
+	calls = [
+			{"mnemonic": "bl", "arg": "#(0x[0-9a-f])"}
+		]
+
+	print "Section address: 0x%x" % section.header.sh_addr
+
+
+	for i in md.disasm(section.data(), section.header.sh_addr):
+		# Is this the end of the function?
+		# Marked as a return clause that has no referenced addresses further ahead
+		# in the assembly
+		if i.mnemonic == "ret" and i.address > addresses[-1]:
+			if addresses[0] in expected_functions:
+				print "Found expected function: 0x%x" % addresses[0]
+
+				expected_functions.remove(addresses[0])
+
+			# Found a function end.
+			functions[addresses[0]] = i.address - addresses[0]
+
+			print "Found function (RET): 0x%x (%d)" % (i.address, i.address - addresses[0])
+
+			# Start looking at a new function
+			addresses = [i.address + 4]
+
+			continue
+		elif i.mnemonic == "ret":
+			pass
+			# print "RET at 0x%x Farthest ptr: 0x%x" % (i.address, addresses[-1])
+
+		for c in calls:
+			if i.mnemonic == c["mnemonic"]:
+				m = re.match(c["arg"], i.op_str)
+
+				if m is None:
+					continue
+
+				# print i.address, "\t", i.mnemonic, i.op_str
+				expected_functions.append(m.groups()[0])
+
+		for b in branches:
+			if i.mnemonic == b["mnemonic"]:
+				if i.address == 0x425bdc:
+					print "Branching!"
+				# Look for the argument
+				m = re.match(b["arg"], i.op_str)
+
+				if m is None:
+					continue
+
+				nextaddr = int(m.groups()[0], 16)
+
+				# This is a DECLARED FUNCTION that I've found
+				if nextaddr in found_funcs:
+					break
+
+				# Too long a jump??
+				if nextaddr - i.address > 4096 * 2:
+					break
+
+				# Check if it's the furthest branch and is pointing back inside the function
+				if (i.address > addresses[-1]) and (i.address > nextaddr) and (i.address > addresses[-1]):
+					if addresses[0] in expected_functions:
+						print "Found expected function: 0x%x" % addresses[0]
+
+						expected_functions.remove(addresses[0])
+
+					# Found a function end.
+					# if i.address > 0x423230:
+					functions[addresses[0]] = i.address - addresses[0]
+
+					print "Found function (BACK JMP): 0x%x (%d)" % (i.address, i.address - addresses[0])
+
+					# Start looking at a new function
+					addresses = [i.address + 4]
+				else:
+					# print "Next addr: 0x%x End addr: 0x%x" % (nextaddr, addresses[-1])
+					addresses.append(nextaddr)
+					addresses.sort()
+				break
+
+	print "Functions:", functions
+	print "Expected (unfound) functions:", expected_functions
+
+def find_functions(elffile):
+	elf = ELFFile(open(elffile, "rb"))
+
+	text = elf.get_section_by_name(".text")
+
+	if text is None:
+		raise Exception("No .text section found")
+
+	dynsym = elf.get_section_by_name(".dynsym")
+
+	if dynsym is None:
+		raise Exception("No .dynsym section found")
+
+	found_funcs = []
+
+	for sym in dynsym.iter_symbols():
+		if sym.entry.st_value != 0:
+			found_funcs.append(sym.entry.st_value)
+
+	if elf.header.e_machine == "EM_AARCH64":
+		return find_functions_aarch64(text, found_funcs)
+
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser()
 	parser.add_argument("elf", help = "ELF File")
@@ -135,4 +268,5 @@ if __name__ == "__main__":
 	# Parse arguments
 	args = parser.parse_args()
 
-	find_usages(args.elf, import_match(args.elf, ["sha", "aes", "des", "md5", "memcpy"]))
+	find_functions(args.elf)
+	#find_usages(args.elf, import_match(args.elf, ["sha", "aes", "des", "md5", "memcpy"]))
