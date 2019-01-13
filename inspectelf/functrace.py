@@ -82,7 +82,7 @@ def import_match(elffile, names):
 
 	for i in imports:
 		for p in patterns:
-			if p.match(i["name"]) is not None:
+			if p.match(i["name"].lower()) is not None:
 				#print hex(i["offset"]), "(%s)\t" % hex(i["reloc"].entry.r_info_sym), i["name"]
 				print hex(i["offset"]), " (%d)\t" % i["index"], i["name"]
 				found.append(i)
@@ -122,6 +122,8 @@ def find_usages(elffile, imports):
 
 	md.skipdata = True
 
+	usages = {}
+
 	#for i in md.disasm(text.data(), elf.header.e_entry):
 	for i in md.disasm(text.data(), text.header.sh_addr):
 		# if i.address == 0x7810c:
@@ -131,6 +133,15 @@ def find_usages(elffile, imports):
 			for offset in offsets:
 				if hex(offset) in i.op_str:
 					print "0x%x: Call to %s@plt" % (i.address, offset_map[offset])
+
+					# Create a list of usages
+					if offset not in usages:
+						usages[offset] = []
+
+					# Add usage pointer
+					usages[offset].append(i.address)
+
+	return usages
 
 def find_functions_aarch64(section, found_funcs, terminating = []):
 	md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
@@ -193,7 +204,7 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 				expected_functions.remove(addresses[0])
 
 			# Found a function end.
-			functions[addresses[0]] = i.address - addresses[0]
+			functions[addresses[0]] = i.address - addresses[0] + 4
 
 			print "Found function (RET): 0x%x (%d)" % (addresses[0], i.address - addresses[0])
 
@@ -221,7 +232,7 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 						expected_functions.remove(addresses[0])
 
 					# Found a function end.
-					functions[addresses[0]] = i.address - addresses[0]
+					functions[addresses[0]] = i.address - addresses[0] + 4
 
 					print "Found function (TERMINATING CALL): 0x%x (%d)" % (addresses[0], i.address - addresses[0])
 
@@ -258,7 +269,7 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 
 					# Found a function end.
 					# if i.address > 0x423230:
-					functions[addresses[0]] = i.address - addresses[0]
+					functions[addresses[0]] = i.address - addresses[0] + 4
 
 					print "Found function (BACK JMP): 0x%x (%d)" % (addresses[0], i.address - addresses[0])
 
@@ -272,6 +283,7 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 
 	k = functions.keys()
 	k.sort()
+
 	for x in functions:
 		if x in expected_functions:
 			expected_functions.remove(x)
@@ -283,6 +295,7 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 	expected_functions.sort()
 	print "Functions:", [ (hex(x), functions[x]) for x in k ]
 	print "Expected (unfound) functions:", [ hex(x) for x in expected_functions ]
+	return functions
 
 def find_functions(elffile):
 	elf = ELFFile(open(elffile, "rb"))
@@ -328,5 +341,18 @@ if __name__ == "__main__":
 	# Parse arguments
 	args = parser.parse_args()
 
-	find_functions(args.elf)
-	#find_usages(args.elf, import_match(args.elf, ["sha", "aes", "des", "md5", "memcpy"]))
+	# Find all functions within the ELF object
+	functions = find_functions(args.elf)
+	ranges = [(ptr, ptr + functions[ptr]) for ptr in functions]
+
+	# Find all the usages of the following functions
+	usages = find_usages(args.elf, import_match(args.elf, ["sha", "aes", "des", "md5", "memcpy", "memset"]))
+
+	find_function = lambda args: filter(lambda start, end: start < args[0] < end, args[1])[0]
+
+	candidate = usages.keys()[0]
+	instance = usages[candidate]
+
+	find_function((instance, ranges))
+	print functions
+	print usages
