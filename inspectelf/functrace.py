@@ -92,7 +92,7 @@ def import_match(elffile, names):
 		for p in patterns:
 			if p.match(imports[i]["name"].lower()) is not None:
 				#print hex(i["offset"]), "(%s)\t" % hex(i["reloc"].entry.r_info_sym), i["name"]
-				print hex(imports[i]["offset"]), " (%d)\t" % imports[i]["index"], imports[i]["name"]
+				# print hex(imports[i]["offset"]), " (%d)\t" % imports[i]["index"], imports[i]["name"]
 				found[imports[i]["offset"]] = imports[i]
 
 				break
@@ -133,7 +133,7 @@ def find_usages(elffile, addresses):
 		if i.mnemonic == mnemonic:
 			for offset in addresses:
 				if hex(offset) in i.op_str:
-					print "0x%x: Call to %s" % (i.address, addresses[offset]["name"])
+					# print "0x%x: Call to %s" % (i.address, addresses[offset]["name"])
 
 					# Create a list of usages
 					if offset not in usages:
@@ -294,8 +294,8 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 			expected_functions.remove(x)
 
 	expected_functions.sort()
-	print "Functions:", [ (hex(x), functions[x]) for x in k ]
-	print "Expected (unfound) functions:", [ hex(x) for x in expected_functions ]
+	# print "Functions:", [ (hex(x), functions[x]) for x in k ]
+	# print "Expected (unfound) functions:", [ hex(x) for x in expected_functions ]
 	return functions
 
 def find_functions(elffile):
@@ -326,11 +326,7 @@ def find_functions(elffile):
 	terminating = ["abort", "__stack_chk_fail"]
 	terminating_funcs = filter(lambda x: x is not None, [ imports[x]["offset"] if imports[x]["name"] in terminating else None for x in imports ])
 
-	for i in imports:
-		if imports[i]["name"] in terminating:
-			print "%s@plt = 0x%x" % (imports[i]["name"], imports[i]["offset"])
-
-	print "Found Imports:", [hex(x) for x in found_funcs]
+	# print "Found Imports:", [hex(x) for x in found_funcs]
 
 	if elf.header.e_machine == "EM_AARCH64":
 		return find_functions_aarch64(text, found_funcs, terminating_funcs)
