@@ -2,11 +2,12 @@
 SRCS=sha.c
 PROJ=sha
 
-CFLAGS=-fstack-protector-all -s -O3
-CFLAGS+=-I/home/giliy/openssl/include/
+CFLAGS=-fstack-protector-all -s -O3 -pie -fPIE
+CFLAGS+=-I${HOME}/openssl/include/
 WFLAGS=-Wall -Wextra -pedantic -Werror
-LFLAGS=-Wl,-z,relro,-z,now
-LFLAGS+=-L/home/giliy/openssl
+#LFLAGS=-Wl,-z,relro,-z,now
+LFLAGS=
+LFLAGS+=-L${HOME}/openssl
 LFLAGS+=-lcrypto
 OFLAGS=-pipe
 
@@ -19,9 +20,6 @@ OBJS = $(SRCS:%.c=%.o)
 
 all: sha
 	@echo "Done"
-
-em: clean
-	@make CROSS=emulate
 
 $(PROJ): $(OBJS)
 	@echo "Linking: \033[0;32m$@\033[0m"

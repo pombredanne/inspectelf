@@ -89,5 +89,22 @@ int main(int argc, char ** argv)
 
 	printf("\n");
 
+	/* Anyway call sha1 */
+	digest_size = sha1((uint8_t *)argv[2], strlen(argv[2]), digest);
+
+	for (i = 0; i < digest_size; ++i)
+		printf("%08x ", digest[i]);
+
+	printf("\n");
+
+
+	/* Anyway call sha1 */
+	digest_size = sha1((uint8_t *)argv[2], strlen(argv[2]), digest);
+
+	for (i = 0; i < digest_size; ++i)
+		printf("%08x ", digest[i]);
+
+	printf("\n");
+
 	return 0;
 }

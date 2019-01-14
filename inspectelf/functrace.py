@@ -110,14 +110,17 @@ def find_usages(elffile, addresses):
 		arch = CS_ARCH_X86
 		mode = CS_MODE_64
 		mnemonic = "call"
+		pattern = "#(0x[a-f0-9]+)"
 	elif elf.header.e_machine == "EM_ARM":
 		arch = CS_ARCH_ARM
 		mode = CS_MODE_ARM
 		mnemonic = "bl"
+		pattern = "#(0x[a-f0-9]+)"
 	elif elf.header.e_machine == "EM_AARCH64":
 		arch = CS_ARCH_ARM64
 		mode = CS_MODE_ARM
 		mnemonic = "bl"
+		pattern = "#(0x[a-f0-9]+)"
 
 	md = Cs(arch, mode)
 
@@ -127,12 +130,14 @@ def find_usages(elffile, addresses):
 
 	#for i in md.disasm(text.data(), elf.header.e_entry):
 	for i in md.disasm(text.data(), text.header.sh_addr):
-		# if i.address == 0x7810c:
-		# print hex(i.address), i.mnemonic, i.op_str
-
 		if i.mnemonic == mnemonic:
 			for offset in addresses:
-				if hex(offset) in i.op_str:
+				m = re.match(pattern, i.op_str)
+				if m is None:
+					continue
+				addr = int(m.groups()[0], 16)
+
+				if addr == offset:
 					# print "0x%x: Call to %s" % (i.address, addresses[offset]["name"])
 
 					# Create a list of usages
@@ -200,14 +205,14 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 		# in the assembly
 		if i.mnemonic == "ret" and i.address >= addresses[-1]:
 			if addresses[0] in expected_functions:
-				print "Found expected function: 0x%x" % addresses[0]
+				#print "Found expected function: 0x%x" % addresses[0]
 
 				expected_functions.remove(addresses[0])
 
 			# Found a function end.
 			functions[addresses[0]] = i.address - addresses[0] + 4
 
-			print "Found function (RET): 0x%x (%d)" % (addresses[0], i.address - addresses[0])
+			print "Found function (RET): 0x%x (%d)" % (addresses[0], functions[addresses[0]])
 
 			# Start looking at a new function
 			addresses = [i.address + 4]
@@ -228,14 +233,14 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 
 				if nextaddr in terminating:
 					if addresses[0] in expected_functions:
-						print "Found expected function: 0x%x" % addresses[0]
+						#print "Found expected function: 0x%x" % addresses[0]
 
 						expected_functions.remove(addresses[0])
 
 					# Found a function end.
 					functions[addresses[0]] = i.address - addresses[0] + 4
 
-					print "Found function (TERMINATING CALL): 0x%x (%d)" % (addresses[0], i.address - addresses[0])
+					print "Found function (TERMINATING CALL): 0x%x (%d)" % (addresses[0], functions[addresses[0]])
 
 					# Start looking at a new function
 					addresses = [i.address + 4]
@@ -264,7 +269,7 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 				# Check if it's the furthest branch and is pointing back inside the function
 				if ((i.address >= addresses[-1]) and (i.address >= nextaddr) and (i.address >= addresses[-1])) or (nextaddr in terminating):
 					if addresses[0] in expected_functions:
-						print "Found expected function: 0x%x" % addresses[0]
+						# print "Found expected function: 0x%x" % addresses[0]
 
 						expected_functions.remove(addresses[0])
 
@@ -272,7 +277,7 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 					# if i.address > 0x423230:
 					functions[addresses[0]] = i.address - addresses[0] + 4
 
-					print "Found function (BACK JMP): 0x%x (%d)" % (addresses[0], i.address - addresses[0])
+					print "Found function (BACK JMP): 0x%x (%d)" % (addresses[0], functions[addresses[0]])
 
 					# Start looking at a new function
 					addresses = [i.address + 4]
@@ -359,15 +364,18 @@ def find_addr_in_range(addr, ranges):
 def callstack(elffile, addr, function_ranges, child, depth = 0):
 	calling_function = find_addr_in_range(addr, function_ranges)
 
-	# print "Call to 0x%x is at 0x%x Function: 0x%x (Depth: %d)" % (child.addr, addr, calling_function, depth)
-
 	node = CallNode()
 	node.addr = calling_function
 
 	child.usages[addr] = node
 
-	for call in find_usages(elffile, {calling_function: {"name": ""}}):
-		callstack(elffile, call, function_ranges, node, depth + 1)
+	if calling_function is None:
+		return child
+
+	usages = find_usages(elffile, {calling_function: {"name": ""}})
+	for func in usages:
+		for u in usages[func]:
+			callstack(elffile, u, function_ranges, node, depth + 1)
 
 	return child
 
@@ -402,8 +410,8 @@ if __name__ == "__main__":
 	imports = import_funcs(args.elf)
 
 	# File all imports of given pattern
-	# selected_imports = import_match(args.elf, ["sha", "aes", "des", "md5", "memcpy", "memset"])
-	selected_imports = import_match(args.elf, ["sha"])
+	selected_imports = import_match(args.elf, ["sha", "aes", "des", "md5", "memcpy", "memset"])
+	# selected_imports = import_match(args.elf, ["sha"])
 
 	# Find all the usages of the following functions
 	usages = find_usages(args.elf, selected_imports)
