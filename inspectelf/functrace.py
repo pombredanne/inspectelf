@@ -149,7 +149,7 @@ def find_usages(elffile, addresses):
 
 	return usages
 
-def find_functions_aarch64(section, found_funcs, terminating = []):
+def find_functions_aarch64(section, symbols, found_funcs, terminating = []):
 	md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
 
 	md.skipdata = True
@@ -158,7 +158,9 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 	addresses = [section.header.sh_addr]
 
 	functions = {}
-	expected_functions = []
+
+	# Start with all the given symbols
+	expected_functions = [ x for x in symbols ]
 
 	branches = [
 			{"mnemonic": "b", "arg": "#(0x[0-9a-f]+)"},
@@ -231,7 +233,7 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 
 				nextaddr = int(m.groups()[0], 16)
 
-				if nextaddr in terminating:
+				if nextaddr in terminating and i.address >= addresses[-1]:
 					if addresses[0] in expected_functions:
 						#print "Found expected function: 0x%x" % addresses[0]
 
@@ -259,8 +261,8 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 				nextaddr = int(m.groups()[0], 16)
 
 				# This is a DECLARED FUNCTION that I've found. Ignore this branch.
-				if nextaddr in found_funcs:
-					break
+				# if nextaddr in found_funcs:
+				#	break
 
 				# Too long a jump??
 				if nextaddr - i.address > 4096 * 2:
@@ -268,7 +270,7 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 
 				# Check if it's the furthest branch and is pointing back inside the function
 				# Only "b" is considered terminating!!
-				if ((i.address >= addresses[-1]) and (i.address >= nextaddr) and (i.address >= addresses[-1]) and i.mnemonic == "b") or (nextaddr in terminating):
+				if ((i.address >= addresses[-1]) and ((i.address >= nextaddr) or (nextaddr in found_funcs)) and (i.address >= addresses[-1]) and i.mnemonic == "b") or (nextaddr in terminating):
 					if addresses[0] in expected_functions:
 						# print "Found expected function: 0x%x" % addresses[0]
 
@@ -306,19 +308,22 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 		for i in xrange(len(offsets) - 1):
 			off0 = offsets[i]
 			off1 = offsets[i + 1]
-			if off1 > expected > off0:
+			# Find the exact spot to place the expected symbol (either from detected CALL or from a symbol)
+			# Make sure the offset is indeed in found functions (as for some weird reasons some aren't (??))
+			# And make sure we don't have some false positives with symbols that point 8 bytes prior to actual function start
+			if off1 > expected > off0  and off0 in functions and expected - off0 < functions[off0]:
 				prev = functions[off0]
 				functions[off0] = expected - off0
 
 				# Add the new function
 				functions[expected] = prev - functions[off0]
 
-				print "Prev: 0x%x (%d) New: 0x%x (%d)" % (off0, functions[off0], expected, functions[expected])
+				print "Prev: 0x%x (%d) New: 0x%x (%d) Next: 0x%x (%d)" % (off0, functions[off0], expected, functions[expected], off1, functions[off1])
+
+				offsets.append(expected)
+				offsets.sort()
 
 				break
-
-		offsets.append(expected)
-		offsets.sort()
 
 	# print "Functions:", [ (hex(x), functions[x]) for x in k ]
 	# print "Expected (unfound) functions:", [ hex(x) for x in expected_functions ]
@@ -354,8 +359,11 @@ def find_functions(elffile):
 
 	# print "Found Imports:", [hex(x) for x in found_funcs]
 
+	# Add symbols to the party
+	symbols = find_symbols(elffile)
+
 	if elf.header.e_machine == "EM_AARCH64":
-		return find_functions_aarch64(text, found_funcs, terminating_funcs)
+		return find_functions_aarch64(text, symbols, found_funcs, terminating_funcs)
 
 def find_symbols(elffile):
 	elf = ELFFile(open(elffile, "rb"))
