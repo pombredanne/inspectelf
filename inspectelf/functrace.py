@@ -6,6 +6,11 @@ import re
 from elftools.elf.elffile import ELFFile
 from capstone import *
 
+class CallNode:
+	def __init__(self):
+		self.addr = 0
+		self.usages = {}
+
 def import_funcs(elffile):
 	elf = ELFFile(open(elffile, "rb"))
 
@@ -45,15 +50,18 @@ def import_funcs(elffile):
 			plt.header.sh_entsize = 12
 			startoff = 8
 
-	relocs = []
+	relocs = {}
 
 	for reloc in rela_plt.iter_relocations():
-		relocs.append({
+		r = {
 				"name": symtab.get_symbol(reloc.entry.r_info_sym).name,
 				"offset": plt.header.sh_addr + startoff + plt.header.sh_entsize * idx,
 				"reloc": reloc,
 				"index": idx
-			})
+			}
+
+		# Map it according to offset, as all accesses will be accordingly
+		relocs[r["offset"]] = r
 
 		idx += 1
 
@@ -78,19 +86,19 @@ def import_match(elffile, names):
 		# Exact
 		patterns.append(re.compile("^%s$" % n))
 
-	found = []
+	found = {}
 
 	for i in imports:
 		for p in patterns:
-			if p.match(i["name"].lower()) is not None:
+			if p.match(imports[i]["name"].lower()) is not None:
 				#print hex(i["offset"]), "(%s)\t" % hex(i["reloc"].entry.r_info_sym), i["name"]
-				print hex(i["offset"]), " (%d)\t" % i["index"], i["name"]
-				found.append(i)
+				print hex(imports[i]["offset"]), " (%d)\t" % imports[i]["index"], imports[i]["name"]
+				found[imports[i]["offset"]] = imports[i]
 
 				break
 	return found
 
-def find_usages(elffile, imports):
+def find_usages(elffile, addresses):
 	elf = ELFFile(open(elffile, "rb"))
 
 	text = elf.get_section_by_name(".text")
@@ -113,13 +121,6 @@ def find_usages(elffile, imports):
 
 	md = Cs(arch, mode)
 
-	offset_map = {}
-	offsets = []
-
-	for x in imports:
-		offsets.append(x["offset"])
-		offset_map[x["offset"]] = x["name"]
-
 	md.skipdata = True
 
 	usages = {}
@@ -130,9 +131,9 @@ def find_usages(elffile, imports):
 		# print hex(i.address), i.mnemonic, i.op_str
 
 		if i.mnemonic == mnemonic:
-			for offset in offsets:
+			for offset in addresses:
 				if hex(offset) in i.op_str:
-					print "0x%x: Call to %s@plt" % (i.address, offset_map[offset])
+					print "0x%x: Call to %s" % (i.address, addresses[offset]["name"])
 
 					# Create a list of usages
 					if offset not in usages:
@@ -319,20 +320,76 @@ def find_functions(elffile):
 	imports = import_funcs(elffile)
 
 	# Add imported functions
-	found_funcs += [ x["offset"] for x in imports ]
+	found_funcs += [ imports[x]["offset"] for x in imports ]
 
 	# filter terminating branches
-	terminating = ["abort"]
-	terminating_funcs = filter(lambda x: x is not None, [ x["offset"] if x["name"] in terminating else None for x in imports ])
+	terminating = ["abort", "__stack_chk_fail"]
+	terminating_funcs = filter(lambda x: x is not None, [ imports[x]["offset"] if imports[x]["name"] in terminating else None for x in imports ])
 
-	for func in imports:
-		if func["name"] in terminating:
-			print "%s@plt = 0x%x" % (func["name"], func["offset"])
+	for i in imports:
+		if imports[i]["name"] in terminating:
+			print "%s@plt = 0x%x" % (imports[i]["name"], imports[i]["offset"])
 
 	print "Found Imports:", [hex(x) for x in found_funcs]
 
 	if elf.header.e_machine == "EM_AARCH64":
 		return find_functions_aarch64(text, found_funcs, terminating_funcs)
+
+def find_symbols(elffile):
+	elf = ELFFile(open(elffile, "rb"))
+
+	symtab = elf.get_section_by_name(".symtab")
+
+	if symtab is None:
+		raise Exception("No .symtab section found")
+
+	symbols = {}
+
+	for s in symtab.iter_symbols():
+		if s.entry.st_value == 0:
+			continue
+		symbols[s.entry.st_value] = s.name
+
+	return symbols
+
+def find_addr_in_range(addr, ranges):
+	r = filter(lambda r: r[0] < addr < r[1], ranges)
+
+	if len(r) != 1:
+		return None
+	else:
+		return r[0][0]
+
+def callstack(elffile, addr, function_ranges, child, depth = 0):
+	calling_function = find_addr_in_range(addr, function_ranges)
+
+	# print "Call to 0x%x is at 0x%x Function: 0x%x (Depth: %d)" % (child.addr, addr, calling_function, depth)
+
+	node = CallNode()
+	node.addr = calling_function
+
+	child.usages[addr] = node
+
+	for call in find_usages(elffile, {calling_function: {"name": ""}}):
+		callstack(elffile, call, function_ranges, node, depth + 1)
+
+	return child
+
+def print_callstack(node, symbols, imports, depth = 0, callpoint = None):
+	if node.addr in symbols:
+		funcname = "%s@0x%x" % (symbols[node.addr], node.addr)
+	elif node.addr in imports:
+		funcname = "%s@.plt@0x%x" % (imports[node.addr]["name"], node.addr)
+	else:
+		funcname = "unnamed@0x%x" % (node.addr)
+
+	if callpoint is None:
+		print "\t" * depth, funcname
+	else:
+		print "\t" * depth, "from 0x%x" % callpoint, "at", funcname
+
+	for u in node.usages:
+		print_callstack(node.usages[u], symbols, imports, depth + 1, u)
 
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser()
@@ -345,14 +402,26 @@ if __name__ == "__main__":
 	functions = find_functions(args.elf)
 	ranges = [(ptr, ptr + functions[ptr]) for ptr in functions]
 
+	# Hold all imports + symbols
+	imports = import_funcs(args.elf)
+
+	# File all imports of given pattern
+	# selected_imports = import_match(args.elf, ["sha", "aes", "des", "md5", "memcpy", "memset"])
+	selected_imports = import_match(args.elf, ["sha"])
+
 	# Find all the usages of the following functions
-	usages = find_usages(args.elf, import_match(args.elf, ["sha", "aes", "des", "md5", "memcpy", "memset"]))
+	usages = find_usages(args.elf, selected_imports)
 
-	find_function = lambda args: filter(lambda start, end: start < args[0] < end, args[1])[0]
+	symbols = find_symbols(args.elf)
 
-	candidate = usages.keys()[0]
-	instance = usages[candidate]
+	for candidate in usages:
+		for instance in usages[candidate]:
+			# Create a call node instance
+			node = CallNode()
+			node.addr = candidate
 
-	find_function((instance, ranges))
-	print functions
-	print usages
+			# Build the call stack
+			stack = callstack(args.elf, instance, ranges, node)
+
+			# Print it
+			print_callstack(stack, symbols, imports)
