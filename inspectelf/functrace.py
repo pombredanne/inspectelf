@@ -267,7 +267,8 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 					break
 
 				# Check if it's the furthest branch and is pointing back inside the function
-				if ((i.address >= addresses[-1]) and (i.address >= nextaddr) and (i.address >= addresses[-1])) or (nextaddr in terminating):
+				# Only "b" is considered terminating!!
+				if ((i.address >= addresses[-1]) and (i.address >= nextaddr) and (i.address >= addresses[-1]) and i.mnemonic == "b") or (nextaddr in terminating):
 					if addresses[0] in expected_functions:
 						# print "Found expected function: 0x%x" % addresses[0]
 
@@ -287,8 +288,8 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 					addresses.sort()
 				break
 
-	k = functions.keys()
-	k.sort()
+	offsets = list(functions.keys())
+	offsets.sort()
 
 	for x in functions:
 		if x in expected_functions:
@@ -299,6 +300,26 @@ def find_functions_aarch64(section, found_funcs, terminating = []):
 			expected_functions.remove(x)
 
 	expected_functions.sort()
+
+	# Merge expected functions with found functions
+	for expected in expected_functions:
+		for i in xrange(len(offsets) - 1):
+			off0 = offsets[i]
+			off1 = offsets[i + 1]
+			if off1 > expected > off0:
+				prev = functions[off0]
+				functions[off0] = expected - off0
+
+				# Add the new function
+				functions[expected] = prev - functions[off0]
+
+				print "Prev: 0x%x (%d) New: 0x%x (%d)" % (off0, functions[off0], expected, functions[expected])
+
+				break
+
+		offsets.append(expected)
+		offsets.sort()
+
 	# print "Functions:", [ (hex(x), functions[x]) for x in k ]
 	# print "Expected (unfound) functions:", [ hex(x) for x in expected_functions ]
 	return functions
@@ -364,13 +385,13 @@ def find_addr_in_range(addr, ranges):
 def callstack(elffile, addr, function_ranges, child, depth = 0):
 	calling_function = find_addr_in_range(addr, function_ranges)
 
+	if calling_function is None:
+		return child
+
 	node = CallNode()
 	node.addr = calling_function
 
 	child.usages[addr] = node
-
-	if calling_function is None:
-		return child
 
 	usages = find_usages(elffile, {calling_function: {"name": ""}})
 	for func in usages:
