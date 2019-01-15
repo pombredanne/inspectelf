@@ -40,7 +40,7 @@ def clang_parse(filename):
 	return {"strings": _cstrings(tu.cursor), "functions": _cfuncs(tu.cursor)}
 
 if __name__ == "__main__":
-	parser = argparse.ArgumentParser()
+	parser = argparse.ArgumentParser(description = "Build C/C++ source files with CLang to extract hardcoded strings and function names")
 	parser.add_argument("file", help = "C/C++ File")
 
 	args = parser.parse_args()

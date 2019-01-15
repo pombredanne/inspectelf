@@ -310,7 +310,7 @@ def check(strings, name = None):
 	return highest["library"]
 
 if __name__ == "__main__":
-	parser = argparse.ArgumentParser()
+	parser = argparse.ArgumentParser(description = "Inspect libraries and sources delivered by versions_download.py and create a rich database for binary similarity matching")
 	parser.add_argument("mode", help = "[scan|identify] to either scan or identify libraries")
 	parser.add_argument("path", help = "Path for shared object / objects tree")
 	args = parser.parse_args()

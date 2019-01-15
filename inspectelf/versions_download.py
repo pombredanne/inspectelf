@@ -432,7 +432,7 @@ if __name__ == "__main__":
 
 	magnum = magic.Magic(flags = magic.MAGIC_MIME)
 
-	parser = argparse.ArgumentParser()
+	parser = argparse.ArgumentParser(description = "Download Debian, RPM, Source packages and create a basic library-to-version sparse database")
 	parser.add_argument("url", help = "Debian package list url")
 
 	# Parse arguments
@@ -440,7 +440,7 @@ if __name__ == "__main__":
 		args = parser.parse_args()
 
 		versions(args.url)
-#	except Exception as e:
-#		print e
+	except Exception as e:
+		print e
 	finally:
 		magnum.close()

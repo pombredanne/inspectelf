@@ -482,7 +482,7 @@ def traces(elffile, funcnames):
 
 
 if __name__ == "__main__":
-	parser = argparse.ArgumentParser()
+	parser = argparse.ArgumentParser(description = "Inspect ELF Files to discover functions (named and unnamed) and create a function trace graph")
 	parser.add_argument("elf", help = "ELF File")
 
 	# Parse arguments

@@ -202,7 +202,7 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = Fals
 
 
 if __name__ == "__main__":
-	parser = argparse.ArgumentParser()
+	parser = argparse.ArgumentParser(description = "Inspect ELF Files for build-time compiler flags")
 	parser.add_argument("-s", "--sysroot", help = "Folder that holds system root (for cross compiled binaries)")
 	parser.add_argument("-r", "--recursive", help = "Continue parsing recursively over dependencies", action = "store_true")
 	parser.add_argument("-c", "--cfg", help = "Build static CFG signatures", action = "store_true")
