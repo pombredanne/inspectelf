@@ -1,0 +1,8 @@
+*.o
+*.swp
+*.pyc
+*.egg-info
+dl
+db
+dldb
+                                                                                                                                                      
