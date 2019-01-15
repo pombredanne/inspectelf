@@ -431,28 +431,42 @@ def print_callstack(node, symbols, imports, depth = 0, callpoint = None):
 	for u in node.usages:
 		print_callstack(node.usages[u], symbols, imports, depth + 1, u)
 
-if __name__ == "__main__":
-	parser = argparse.ArgumentParser()
-	parser.add_argument("elf", help = "ELF File")
+def json_callstack(node, symbols, imports, depth = 0, callpoint = None):
+	node = {"callpoint": callpoint}
 
-	# Parse arguments
-	args = parser.parse_args()
+	if node.addr in symbols:
+		node["name"] = symbols[node.addr]
+		node["address"] = node.addr
+	elif node.addr in imports:
+		node["name"] = imports[node.addr]["name"]
+		node["address"] = node.addr
+	else:
+		node["name"] = "unnamed"
+		node["address"] = node.addr
 
+	node["usages"] = []
+
+	for u in node.usages:
+		node["usages"].append(print_callstack(node.usages[u], symbols, imports, depth + 1, u))
+
+	return node
+
+
+def traces(elffile, funcnames):
 	# Find all functions within the ELF object
-	functions = find_functions(args.elf)
+	functions = find_functions(elffile)
 	ranges = [(ptr, ptr + functions[ptr]) for ptr in functions]
 
 	# Hold all imports + symbols
-	imports = import_funcs(args.elf)
+	imports = import_funcs(elffile)
 
 	# File all imports of given pattern
-	selected_imports = import_match(args.elf, ["sha", "aes", "des", "md5", "memcpy", "memset"])
-	# selected_imports = import_match(args.elf, ["sha"])
+	selected_imports = import_match(elffile, funcnames)
 
 	# Find all the usages of the following functions
-	usages = find_usages(args.elf, selected_imports)
+	usages = find_usages(elffile, selected_imports)
 
-	symbols = find_symbols(args.elf)
+	symbols = find_symbols(elffile)
 
 	for candidate in usages:
 		for instance in usages[candidate]:
@@ -461,7 +475,17 @@ if __name__ == "__main__":
 			node.addr = candidate
 
 			# Build the call stack
-			stack = callstack(args.elf, instance, ranges, node)
+			stack = callstack(elffile, instance, ranges, node)
 
 			# Print it
 			print_callstack(stack, symbols, imports)
+
+
+if __name__ == "__main__":
+	parser = argparse.ArgumentParser()
+	parser.add_argument("elf", help = "ELF File")
+
+	# Parse arguments
+	args = parser.parse_args()
+
+	traces(args.elffile, ["sha", "aes", "des", "md5", "memcpy", "memset"])
