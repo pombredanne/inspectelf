@@ -270,21 +270,20 @@ def find_functions_aarch64(section, symbols, found_funcs, terminating = []):
 
 				# Check if it's the furthest branch and is pointing back inside the function
 				# Only "b" is considered terminating!!
-				if ((i.address >= addresses[-1]) and ((i.address >= nextaddr) or (nextaddr in found_funcs)) and (i.address >= addresses[-1]) and i.mnemonic == "b") or (nextaddr in terminating):
+				if ((i.address >= addresses[-1]) and ((i.address >= nextaddr) or (nextaddr in found_funcs)) and (i.mnemonic == "b")) or (nextaddr in terminating):
 					if addresses[0] in expected_functions:
 						# print "Found expected function: 0x%x" % addresses[0]
 
 						expected_functions.remove(addresses[0])
 
 					# Found a function end.
-					# if i.address > 0x423230:
 					functions[addresses[0]] = i.address - addresses[0] + 4
 
 					print "Found function (BACK JMP): 0x%x (%d)" % (addresses[0], functions[addresses[0]])
 
 					# Start looking at a new function
 					addresses = [i.address + 4]
-				else:
+				elif nextaddr not in found_funcs:
 					# print "Next addr: 0x%x End addr: 0x%x" % (nextaddr, addresses[-1])
 					addresses.append(nextaddr)
 					addresses.sort()
@@ -390,7 +389,10 @@ def find_addr_in_range(addr, ranges):
 	else:
 		return r[0][0]
 
-def callstack(elffile, addr, function_ranges, child, depth = 0):
+def callstack(elffile, addr, function_ranges, child, depth = 0, loop_map = None):
+	if loop_map is None:
+		loop_map = []
+
 	calling_function = find_addr_in_range(addr, function_ranges)
 
 	if calling_function is None:
@@ -399,12 +401,17 @@ def callstack(elffile, addr, function_ranges, child, depth = 0):
 	node = CallNode()
 	node.addr = calling_function
 
+	if addr in loop_map:
+		return child
+	else:
+		loop_map.append(addr)
+
 	child.usages[addr] = node
 
 	usages = find_usages(elffile, {calling_function: {"name": ""}})
 	for func in usages:
 		for u in usages[func]:
-			callstack(elffile, u, function_ranges, node, depth + 1)
+			callstack(elffile, u, function_ranges, node, depth + 1, loop_map)
 
 	return child
 
