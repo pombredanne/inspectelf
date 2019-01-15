@@ -488,4 +488,4 @@ if __name__ == "__main__":
 	# Parse arguments
 	args = parser.parse_args()
 
-	traces(args.elffile, ["sha", "aes", "des", "md5", "memcpy", "memset"])
+	traces(args.elf, ["sha", "aes", "des", "md5", "memcpy", "memset"])
