@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#if 0
+#if 1
 
 int foo(int8_t a)
 {

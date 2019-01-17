@@ -214,7 +214,7 @@ def find_functions_aarch64(section, symbols, found_funcs, terminating = []):
 			# Found a function end.
 			functions[addresses[0]] = i.address - addresses[0] + 4
 
-			print "Found function (RET): 0x%x (%d)" % (addresses[0], functions[addresses[0]])
+			# print "Found function (RET): 0x%x (%d)" % (addresses[0], functions[addresses[0]])
 
 			# Start looking at a new function
 			addresses = [i.address + 4]
@@ -242,7 +242,7 @@ def find_functions_aarch64(section, symbols, found_funcs, terminating = []):
 					# Found a function end.
 					functions[addresses[0]] = i.address - addresses[0] + 4
 
-					print "Found function (TERMINATING CALL): 0x%x (%d)" % (addresses[0], functions[addresses[0]])
+					# print "Found function (TERMINATING CALL): 0x%x (%d)" % (addresses[0], functions[addresses[0]])
 
 					# Start looking at a new function
 					addresses = [i.address + 4]
@@ -279,7 +279,7 @@ def find_functions_aarch64(section, symbols, found_funcs, terminating = []):
 					# Found a function end.
 					functions[addresses[0]] = i.address - addresses[0] + 4
 
-					print "Found function (BACK JMP): 0x%x (%d)" % (addresses[0], functions[addresses[0]])
+					# print "Found function (BACK JMP): 0x%x (%d)" % (addresses[0], functions[addresses[0]])
 
 					# Start looking at a new function
 					addresses = [i.address + 4]
@@ -317,7 +317,7 @@ def find_functions_aarch64(section, symbols, found_funcs, terminating = []):
 				# Add the new function
 				functions[expected] = prev - functions[off0]
 
-				print "Prev: 0x%x (%d) New: 0x%x (%d) Next: 0x%x (%d)" % (off0, functions[off0], expected, functions[expected], off1, functions[off1])
+				# print "Prev: 0x%x (%d) New: 0x%x (%d) Next: 0x%x (%d)" % (off0, functions[off0], expected, functions[expected], off1, functions[off1])
 
 				offsets.append(expected)
 				offsets.sort()
@@ -370,7 +370,8 @@ def find_symbols(elffile):
 	symtab = elf.get_section_by_name(".symtab")
 
 	if symtab is None:
-		raise Exception("No .symtab section found")
+		# raise Exception("No .symtab section found")
+		return {}
 
 	symbols = {}
 
@@ -432,43 +433,57 @@ def print_callstack(node, symbols, imports, depth = 0, callpoint = None):
 		print_callstack(node.usages[u], symbols, imports, depth + 1, u)
 
 def json_callstack(node, symbols, imports, depth = 0, callpoint = None):
-	node = {"callpoint": callpoint}
+	n = {}
+
+	if callpoint is not None:
+		n["callpoint"] = callpoint
 
 	if node.addr in symbols:
-		node["name"] = symbols[node.addr]
-		node["address"] = node.addr
+		n["name"] = symbols[node.addr]
+		n["address"] = node.addr
 	elif node.addr in imports:
-		node["name"] = imports[node.addr]["name"]
-		node["address"] = node.addr
+		n["name"] = imports[node.addr]["name"]
+		n["address"] = node.addr
 	else:
-		node["name"] = "unnamed"
-		node["address"] = node.addr
+		n["name"] = "unnamed"
+		n["address"] = node.addr
 
-	node["usages"] = []
+	n["friendly"] = "%s@0x%x" % (n["name"], n["address"])
+	n["usages"] = []
 
 	for u in node.usages:
-		node["usages"].append(print_callstack(node.usages[u], symbols, imports, depth + 1, u))
+		n["usages"].append(json_callstack(node.usages[u], symbols, imports, depth + 1, u))
 
-	return node
+	return n
 
 
 def traces(elffile, funcnames):
+	print "Finding functions..."
+
 	# Find all functions within the ELF object
 	functions = find_functions(elffile)
 	ranges = [(ptr, ptr + functions[ptr]) for ptr in functions]
 
+	print "Looking for imports..."
+
 	# Hold all imports + symbols
 	imports = import_funcs(elffile)
 
-	# File all imports of given pattern
+	# Find all imports of given pattern
 	selected_imports = import_match(elffile, funcnames)
+
+	print "Finding usages..."
 
 	# Find all the usages of the following functions
 	usages = find_usages(elffile, selected_imports)
 
 	symbols = find_symbols(elffile)
 
+	res = {}
+
 	for candidate in usages:
+		res[candidate] = []
+
 		for instance in usages[candidate]:
 			# Create a call node instance
 			node = CallNode()
@@ -477,9 +492,13 @@ def traces(elffile, funcnames):
 			# Build the call stack
 			stack = callstack(elffile, instance, ranges, node)
 
+			r = json_callstack(stack, symbols, imports)
+			res[r["friendly"]] = r
+
 			# Print it
 			print_callstack(stack, symbols, imports)
 
+	return res
 
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description = "Inspect ELF Files to discover functions (named and unnamed) and create a function trace graph")

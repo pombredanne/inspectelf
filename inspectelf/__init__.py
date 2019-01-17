@@ -1,5 +1,5 @@
 from cflags import *
 from cstrings import *
 from functrace import *
-from similarity import *
-from versioning import *
+from versions_download import *
+from versions_similarity import *

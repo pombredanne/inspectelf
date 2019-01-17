@@ -8,7 +8,6 @@ import json
 from os import path, mkdir, listdir
 from elftools.elf.elffile import ELFFile
 from capstone import *
-from similarity import similarity
 from binascii import hexlify
 
 def dedouble(s, c):
@@ -21,16 +20,13 @@ def dedouble(s, c):
 	return now
 
 def x64_parse(e):
-	MECHANISMS = {"STACK_CANARIES": False}
+	return {}
 
-	md = Cs(CS_ARCH_X86, CS_MODE_64)
-	text = get_section(e, ".text")
-	for i in md.disasm(text.data(), 0):
-		if i.mnemonic == "xor" and "fs:[0x28]" in i.op_str:
-			MECHANISMS["STACK_CANARIES"] = True
-			break
+def arm_parse(e):
+	return {}
 
-	return MECHANISMS
+def aarch64_parse(e):
+	return {}
 
 WORK_ARCH = None
 ARCHS = {
@@ -42,13 +38,13 @@ ARCHS = {
 
 		"EM_ARM":
 		{
-			"PARSE": None,
+			"PARSE": arm_parse,
 			"LIBS": []
 		},
 
 		"EM_AARCH64":
 		{
-			"PARSE": None,
+			"PARSE": aarch64_parse,
 			"LIBS": []
 		}
 	}
@@ -144,6 +140,9 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = Fals
 		if dynsym.get_symbol_by_name("__asan_init_v4") is not None:
 			MECHANISMS["SANITIZE_ADDR"] = True
 
+		if dynsym.get_symbol_by_name("__stack_chk_guard") is not None:
+			MECHANISMS["STACK_CANARIES"] = True
+
 		# Check _FORTIFY_SOURCE
 		for symbol in dynsym.iter_symbols():
 			if symbol.name.startswith("__") and symbol.name.endswith("_chk"):
@@ -189,9 +188,10 @@ def inspect(elffile, sysroot = "/", recursive = False, cfg = False, force = Fals
 
 				rpaths.append(LIB_RPATH)
 
-	# Save MECHANISMS to file
-	with open("db/%s.json" % path.basename(elffile), "wb") as f:
-		json.dump(MECHANISMS, f)
+	# Save MECHANISMS to file only if activated as a separate utility
+	if __name__ == "__main__":
+		with open("db/%s.json" % path.basename(elffile), "wb") as f:
+			json.dump(MECHANISMS, f)
 
 	# Before returning to user, remove bloom filters as it's not interestnig anywhere but here
 	for lib in LIBRARIES:

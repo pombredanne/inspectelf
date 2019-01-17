@@ -15,7 +15,7 @@ import hashlib
 import cfg
 import json
 from glob import glob
-from versioning import library_name
+from versions_download import library_name
 from ignores import *
 from cstrings import clang_parse
 
