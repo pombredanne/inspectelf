@@ -128,24 +128,29 @@ def find_usages(elffile, addresses):
 
 	usages = {}
 
+	# Create a placeholder for all usages
+	for offset in addresses:
+		usages[offset] = []
+
 	#for i in md.disasm(text.data(), elf.header.e_entry):
 	for i in md.disasm(text.data(), text.header.sh_addr):
 		if i.mnemonic == mnemonic:
-			for offset in addresses:
-				m = re.match(pattern, i.op_str)
-				if m is None:
-					continue
-				addr = int(m.groups()[0], 16)
+			# Try and match
+			m = re.match(pattern, i.op_str)
+			if m is None:
+				continue
 
-				if addr == offset:
-					# print "0x%x: Call to %s" % (i.address, addresses[offset]["name"])
+			addr = int(m.groups()[0], 16)
 
-					# Create a list of usages
-					if offset not in usages:
-						usages[offset] = []
+			# If referencing to something not in usages, discard it.
+			if addr not in usages:
+				continue
 
-					# Add usage pointer
-					usages[offset].append(i.address)
+			usages[addr].append(i.address)
+
+	# for u in usages:
+	# 	if len(usages[u]) == 0:
+	#		print "Found no usages for address 0x%x" % u
 
 	return usages
 
@@ -171,6 +176,7 @@ def find_functions_aarch64(section, symbols, found_funcs, terminating = []):
 			{"mnemonic": "b.hi", "arg": "#(0x[0-9a-f]+)"},
 			{"mnemonic": "b.cc", "arg": "#(0x[0-9a-f]+)"},
 	 		{"mnemonic": "cbz", "arg": "x[0-9]+, #(0x[0-9a-f]+)"},
+	 		{"mnemonic": "cbnz", "arg": "x[0-9]+, #(0x[0-9a-f]+)"},
 	 		{"mnemonic": "tbz", "arg": "[rw][0-9], #x[0-9]+, #(0x[0-9a-f]+)"}
 	 	]
 
@@ -183,7 +189,6 @@ def find_functions_aarch64(section, symbols, found_funcs, terminating = []):
 		]
 
 	# print "Section address: 0x%x" % section.header.sh_addr
-
 
 	for i in md.disasm(section.data(), section.header.sh_addr):
 		# print hex(i.address), "(0x%x-0x%x)" % (addresses[0],addresses[-1]), i.mnemonic, i.op_str
@@ -289,6 +294,16 @@ def find_functions_aarch64(section, symbols, found_funcs, terminating = []):
 					addresses.sort()
 				break
 
+		# If after all the above logic we're still the head of the function, update it.
+		if i.address > addresses[-1]:
+        		# print "0x%x > 0x%x" % (i.address, addresses[-1])
+		        # addresses.remove(addresses[-1])
+		        addresses.append(i.address)
+		# addresses.sort()
+		# if addresses[-1] < i.address:
+	        # addresses[-1] = i.address
+
+
 	offsets = list(functions.keys())
 	offsets.sort()
 
@@ -384,6 +399,7 @@ def find_symbols(elffile):
 
 def find_addr_in_range(addr, ranges):
 	r = filter(lambda r: r[0] < addr < r[1], ranges)
+	# print ["0x%x - 0x%x" % (start, end) for start, end in r]
 
 	if len(r) != 1:
 		return None
@@ -397,6 +413,7 @@ def callstack(elffile, addr, function_ranges, child, depth = 0, loop_map = None)
 	calling_function = find_addr_in_range(addr, function_ranges)
 
 	if calling_function is None:
+	        print "No calling function for address 0x%x" % addr
 		return child
 
 	node = CallNode()
@@ -409,6 +426,7 @@ def callstack(elffile, addr, function_ranges, child, depth = 0, loop_map = None)
 
 	child.usages[addr] = node
 
+        # print "Looking for usages for 0x%x" % calling_function
 	usages = find_usages(elffile, {calling_function: {"name": ""}})
 	for func in usages:
 		for u in usages[func]:
@@ -456,13 +474,36 @@ def json_callstack(node, symbols, imports, depth = 0, callpoint = None):
 
 	return n
 
+def fix_overlapping_ranges(functions):
+        sorted_starts = list(functions.keys())
+        sorted_starts.sort()
+        ranges = []
+        skip = 0
+        for s in sorted_starts:
+                if skip > 0:
+                        skip -= 1
+                        continue
+
+                e = s + functions[s]
+                for s2 in sorted_starts:
+                        if s < s2 < e:
+                                skip += 1
+                                if e < (s2 + functions[s2]):
+                                        e = s2 + functions[s2]
+                        elif e <= s2:
+                                break
+                ranges.append((s, e))
+        return ranges
 
 def traces(elffile, funcnames):
 	print "Finding functions..."
 
 	# Find all functions within the ELF object
 	functions = find_functions(elffile)
-	ranges = [(ptr, ptr + functions[ptr]) for ptr in functions]
+
+        ranges = fix_overlapping_ranges(functions)
+
+        print ["0x%x - 0x%x" % (start, end) for start, end in ranges]
 
 	print "Looking for imports..."
 
