@@ -11,7 +11,8 @@ LFLAGS+=-L${HOME}/openssl
 LFLAGS+=-lcrypto
 OFLAGS=-pipe
 
-CROSS_COMPILE=aarch64-linux-gnu-
+#CROSS_COMPILE=aarch64-linux-gnu-
+CROSS_COMPILE=arm-linux-gnueabi-
 
 CC=${CROSS_COMPILE}gcc
 LD=${CROSS_COMPILE}gcc
