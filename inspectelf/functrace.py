@@ -296,12 +296,12 @@ def find_functions_aarch64(section, symbols, found_funcs, terminating = []):
 
 		# If after all the above logic we're still the head of the function, update it.
 		if i.address > addresses[-1]:
-        		# print "0x%x > 0x%x" % (i.address, addresses[-1])
-		        # addresses.remove(addresses[-1])
-		        addresses.append(i.address)
+				# print "0x%x > 0x%x" % (i.address, addresses[-1])
+				# addresses.remove(addresses[-1])
+				addresses.append(i.address)
 		# addresses.sort()
 		# if addresses[-1] < i.address:
-	        # addresses[-1] = i.address
+			# addresses[-1] = i.address
 
 
 	offsets = list(functions.keys())
@@ -398,9 +398,29 @@ def find_symbols(elffile):
 	return symbols
 
 def find_addr_in_range(addr, ranges):
+
+	stage = len(ranges)
+	i = stage / 2
+
+	while stage > 0:
+		stage /= 2
+		# print "i = %d stage: %d 0x%x < 0x%x < 0x%x" % (i, stage, ranges[i][0], addr, ranges[i][1])
+		if ranges[i][1] < addr:
+			i += stage
+		elif addr < ranges[i][0]:
+			i -= stage
+		else:
+			return ranges[i][0]
+
+	if ranges[i - 1][0] <= addr <= ranges[i - 1][1]:
+		return ranges[i - 1][0]
+
+	if ranges[i + 1][0] <= addr <= ranges[i + 1][1]:
+		return ranges[i + 1][0]
+
+	# Didn't find any range? Weird...
 	r = filter(lambda r: r[0] < addr < r[1], ranges)
 	# print ["0x%x - 0x%x" % (start, end) for start, end in r]
-
 	if len(r) != 1:
 		return None
 	else:
@@ -413,7 +433,7 @@ def callstack(elffile, addr, function_ranges, child, depth = 0, loop_map = None)
 	calling_function = find_addr_in_range(addr, function_ranges)
 
 	if calling_function is None:
-	        print "No calling function for address 0x%x" % addr
+		print "No calling function for address 0x%x" % addr
 		return child
 
 	node = CallNode()
@@ -426,7 +446,7 @@ def callstack(elffile, addr, function_ranges, child, depth = 0, loop_map = None)
 
 	child.usages[addr] = node
 
-        # print "Looking for usages for 0x%x" % calling_function
+		# print "Looking for usages for 0x%x" % calling_function
 	usages = find_usages(elffile, {calling_function: {"name": ""}})
 	for func in usages:
 		for u in usages[func]:
@@ -475,25 +495,25 @@ def json_callstack(node, symbols, imports, depth = 0, callpoint = None):
 	return n
 
 def fix_overlapping_ranges(functions):
-        sorted_starts = list(functions.keys())
-        sorted_starts.sort()
-        ranges = []
-        skip = 0
-        for s in sorted_starts:
-                if skip > 0:
-                        skip -= 1
-                        continue
+	sorted_starts = list(functions.keys())
+	sorted_starts.sort()
+	ranges = []
+	skip = 0
+	for s in sorted_starts:
+		if skip > 0:
+			skip -= 1
+			continue
 
-                e = s + functions[s]
-                for s2 in sorted_starts:
-                        if s < s2 < e:
-                                skip += 1
-                                if e < (s2 + functions[s2]):
-                                        e = s2 + functions[s2]
-                        elif e <= s2:
-                                break
-                ranges.append((s, e))
-        return ranges
+		e = s + functions[s]
+		for s2 in sorted_starts:
+			if s < s2 < e:
+				skip += 1
+				if e < (s2 + functions[s2]):
+					e = s2 + functions[s2]
+			elif e <= s2:
+				break
+		ranges.append((s, e))
+	return ranges
 
 def traces(elffile, funcnames):
 	print "Finding functions..."
@@ -501,9 +521,9 @@ def traces(elffile, funcnames):
 	# Find all functions within the ELF object
 	functions = find_functions(elffile)
 
-        ranges = fix_overlapping_ranges(functions)
+	ranges = fix_overlapping_ranges(functions)
 
-        print ["0x%x - 0x%x" % (start, end) for start, end in ranges]
+	print ["0x%x - 0x%x" % (start, end) for start, end in ranges]
 
 	print "Looking for imports..."
 
