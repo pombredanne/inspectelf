@@ -1,7 +1,7 @@
 #!/usr/bin/python
 
 import os
-import json
+import pickle
 
 class Shufel(dict):
 	def __init__(self, filename):
@@ -13,16 +13,15 @@ class Shufel(dict):
 		# Load existing file
 		if os.path.exists(self.filename):
 			with open(self.filename, "rb") as f:
-				d = json.load(f)
+				d = pickle.load(f)
 
 				# Copy data
 				for k in d.keys():
 					self[k] = d[k]
 
-
 	def sync(self):
 		with open(self.filename, "wb") as f:
-			json.dump(self, f)
+			pickle.dump(self, f)
 
 	def __setitem__(self, key, value):
 		dict.__setitem__(self, key, value)

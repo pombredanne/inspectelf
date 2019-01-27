@@ -19,9 +19,9 @@ from tempfile import *
 from rpm2cpio import *
 from libarchive import *
 from HTMLParser import HTMLParser
-# from shufel import Shufel
-from shove import Shove
-Shufel = Shove
+from shufel import Shufel
+# from shove import Shove
+# Shufel = Shove
 
 # For xz
 try:
@@ -116,6 +116,8 @@ def dissect_links(links):
 		if libname not in libraries:
 			libraries[libname] = {}
 
+		v = "0"
+
 		if libname == "openssl" or libname == "libssl" or libname == "libcrypto":
 			# print filename
 			m = re.match(".+(\d\.\d\.\d[a-z]).*" , filename)
@@ -174,7 +176,7 @@ def extract_deb(archive, basepath, libdl):
 
 						localpath = os.path.sep.join([basepath, tarname])
 
-						if "application/x-sharedlib" not in magnum.id_filename(localpath):
+						if "application/x-sharedlib" not in magic.detect_from_filename(localpath).mime_type:
 							os.unlink(localpath)
 							continue
 
@@ -231,7 +233,7 @@ def extract_rpm(archive, basepath, libdl):
 					if os.path.exists("./%s" % os.path.basename(p)):
 						shutil.rmtree("./%s" % os.path.basename(p))
 
-					if "application/x-sharedlib" not in magnum.id_filename("./%s" % p):
+					if "application/x-sharedlib" not in magic.detect_from_filename("./%s" % p).mime_type:
 						os.unlink(p)
 						shutil.rmtree("./usr/")
 						continue
@@ -303,7 +305,10 @@ def extract_src(archive, basepath, libdl):
 
 	elif archive.endswith(".gz"):
 		with gzip.open(archive, "rb") as f:
-			found = extract_src_tar(f.read(), basepath, libdl)
+			try:
+				found = extract_src_tar(f.read(), basepath, libdl)
+			except:
+				found = False
 
 	# Erase all working directories
 	if not found:
@@ -429,8 +434,6 @@ def versions(url):
 
 if __name__ == "__main__":
 	dldb = Shufel("file://dldb")
-
-	magnum = magic.Magic(flags = magic.MAGIC_MIME)
 
 	parser = argparse.ArgumentParser(description = "Download Debian, RPM, Source packages and create a basic library-to-version sparse database")
 	parser.add_argument("url", help = "Debian package list url")

@@ -1,10 +1,10 @@
 #!/usr/bin/python2.7
 
 from elftools.elf.elffile import ELFFile
-#from shufel import Shufel
+from shufel import Shufel
 
-from shove import Shove
-Shufel = Shove
+# from shove import Shove
+# Shufel = Shove
 
 import itertools
 import operator
