@@ -176,7 +176,11 @@ def extract_deb(archive, basepath, libdl):
 
 						localpath = os.path.sep.join([basepath, tarname])
 
-						if "application/x-sharedlib" not in magic.detect_from_filename(localpath).mime_type:
+						try:
+							if "application/x-sharedlib" not in magic.detect_from_filename(localpath).mime_type:
+								os.unlink(localpath)
+								continue
+						except:
 							os.unlink(localpath)
 							continue
 
@@ -433,7 +437,7 @@ def versions(url):
 		download_versions(libname, libraries[libname])
 
 if __name__ == "__main__":
-	dldb = Shufel("file://dldb")
+	dldb = Shufel("dldb")
 
 	parser = argparse.ArgumentParser(description = "Download Debian, RPM, Source packages and create a basic library-to-version sparse database")
 	parser.add_argument("url", help = "Debian package list url")
@@ -444,6 +448,5 @@ if __name__ == "__main__":
 
 		versions(args.url)
 	except Exception as e:
+		print "EXCEPTION"
 		print e
-	finally:
-		magnum.close()

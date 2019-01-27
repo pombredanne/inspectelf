@@ -48,23 +48,28 @@ def _process_library(db, proj, version, arch, candidate):
 			continue
 
 		# Don't parse the same file again
-		if h in db[proj]:
+		if h in db[proj]["hashes"].keys():
 			print "Already in DB."
 
 			# Fix version info as it's usually better the 2nd time
-			if len(version) > db[proj][h]["version"]:
-				db[proj][h]["version"] = version
+			if len(version) > db[proj]["hashes"][h]["version"]:
+				db[proj]["hashes"][h]["version"] = version
 				db.sync()
 
 			continue
 
 		# Start parsing every candidate into DB
-		db[proj][h] = {
+		db[proj]["hashes"][h] = {
 			"hash": h,
 			"version": version,
 			"arch": arch,
 			"strings": [ s for s in strings(so) ]
 			}
+
+		if version not in db[proj]["versions"].keys():
+			db[proj]["versions"][version] = []
+
+		db[proj]["versions"][version].append(h)
 
 		# Write to DB so we won't lose any data
 		db.sync()
@@ -74,14 +79,20 @@ def _process_library(db, proj, version, arch, candidate):
 
 		if basic_blocks is not None:
 			# Get CFG hashes
-			db[proj][h]["hashes"] = cfg.hashes(basic_blocks)
+			db[proj]["hashes"][h]["hashes"] = cfg.hashes(basic_blocks)
 
 			# Get bloomfilter
-			db[proj][h]["bloomfilter"] = cfg.bloomfilter(basic_blocks)
+			db[proj]["hashes"][h]["bloomfilter"] = cfg.bloomfilter(basic_blocks)
 
 		db.sync()
 
 def _process_src(db, proj, version, srcpath):
+	# Don't parse again the same version
+	for h in db[proj]["hashes"].keys():
+		if version == db[proj]["hashes"][h]["version"] and db[proj]["hashes"][h]["arch"] is None:
+			print "Source %s v%s already parsed" % (proj, version)
+			return
+
 	# List all files in directory
 	files = [y for x in os.walk(srcpath) for y in glob(os.path.join(x[0], '*'))]
 
@@ -98,13 +109,16 @@ def _process_src(db, proj, version, srcpath):
 	learn(proj, strs, version)
 
 def build_db(root):
-	db = Shufel("file://db")
+	db = Shufel("db")
 
 	# First directory heirarchy holds project names
 	for proj in os.listdir(root):
 		# Create a new project in db
-		if proj not in db:
-			db[proj] = { }
+		if proj not in db.keys():
+			db[proj] = {
+					"hashes": {},
+					"versions": {}
+				}
 
 		for version in os.listdir(os.path.sep.join((root, proj))):
 			for arch in os.listdir(os.path.sep.join((root, proj, version))):
@@ -115,7 +129,7 @@ def build_db(root):
 						_process_src(db, proj, version, c)
 					else:
 						_process_library(db, proj, version, arch, c)
-	db.close()
+	# db.close()
 
 def _set_similarity(library, parameter, target_set):
 	highest_ratio = 0
@@ -123,7 +137,7 @@ def _set_similarity(library, parameter, target_set):
 
 	# No exact match. Look for the most similar
 	for h in library:
-		instance = library[h]
+		instance = library["hashes"][h]
 
 		# Check if there is any metadata for this parameter
 		if parameter not in instance:
@@ -146,7 +160,7 @@ def _cfg_bloomfilter_similarity(library, bloomfilter):
 	# No exact match. Look for the most similar
 	for h in library:
 		count = 0
-		instance = library[h]
+		instance = library["hashes"][h]
 
 		if "bloomfilter" not in instance:
 			continue
@@ -169,22 +183,22 @@ def _cfg_bloomfilter_similarity(library, bloomfilter):
 	return (highest_instance, float(highest_count) / float(popcount))
 
 def _libname_similarity(elffile, libname):
-	db = Shufel("file://db")
+	db = Shufel("db")
 
 	# Start by finding an exact match
 	with open(elffile, "rb") as f:
 		s = hashlib.sha256()
 		s.update(f.read())
-		h = s.digest()
+		h = s.digest().encode("hex")
 
-	if h in db[libname]:
+	if h in db[libname]["hashes"].keys():
 		# Ratio is 1 because we found an exact match
-		return {"libname": libname, "instance": db[libname][h], "ratio": 1}
+		return {"libname": libname, "instance": db[libname]["hashes"][h], "ratio": 1}
 
 	similarities = []
 
 	# String similarity
-	str_similarity = _set_similarity(db[libname], "strings", [ s for s in strings(elffile) ])
+	str_similarity = _set_similarity(db[libname]["hashes"], "strings", [ s for s in strings(elffile) ])
 
 	if str_similarity[0] is not None:
 		print libname, str_similarity[1]
@@ -197,7 +211,7 @@ def _libname_similarity(elffile, libname):
 		# CFG hashes
 		hashes = cfg.hashes(blocks)
 
-		result = _set_similarity(db[libname], "hashes", hashes)
+		result = _set_similarity(db[libname]["hashes"], "hashes", hashes)
 
 		# Get hash similarity
 		if result[0] is not None:
@@ -206,7 +220,7 @@ def _libname_similarity(elffile, libname):
 		# CFG Bloomfilter
 		bloomfilter = cfg.bloomfilter(blocks)
 
-		result = _cfg_bloomfilter_similarity(db[libname], bloomfilter)
+		result = _cfg_bloomfilter_similarity(db[libname]["hashes"], bloomfilter)
 
 		if result[0] is not None:
 			# Get bloomfilter match
@@ -231,14 +245,14 @@ def _libname_similarity(elffile, libname):
 
 		if ratio > highest_ratio:
 			highest_ratio = ratio
-			highest_instnace = db[libname][h]
+			highest_instnace = db[libname]["hashes"][h]
 
-	db.close()
+	# db.close()
 
 	return {"libname": libname, "instance": highest_instnace, "ratio": highest_ratio}
 
 def similarity(elffile):
-	db = Shufel("file://db")
+	db = Shufel("db")
 
 	libname = library_name(os.path.basename(elffile))
 
@@ -246,7 +260,7 @@ def similarity(elffile):
 		raise Exception("Unsupported library name")
 
 	# Library not indexed!
-	if libname in db and len(db[libname].keys()) > 0:
+	if libname in db.keys() and len(db[libname].keys()) > 0:
 		print "Checking with %s" % libname
 		return _libname_similarity(elffile, libname)
 
@@ -262,34 +276,39 @@ def similarity(elffile):
 			highest_ratio = result["ratio"]
 			highest_result = result
 
-	db.close()
+	# db.close()
 	return result
 
 def learn(name, strings, version):
-	db = Shufel("file://db")
+	db = Shufel("db")
 
 	s = hashlib.sha256()
 	s.update("".join(strings))
-	h = s.digest()
+	h = s.digest().encode("HEX")
 
-	db[name][h] = {
+	db[name]["hashes"][h] = {
 			"hash": h,
 			"version": version,
 			"arch": None,
 			"strings": strings
 		}
 
+	if version not in db[name]["versions"].keys():
+		db[name]["versions"][version] = []
+
+	db[name]["versions"][version].append(h)
+
 	db.sync()
-	db.close()
+	# db.close()
 
 def _check(_db, strings, name):
 	# Find similarity
-	instance, ratio = _set_similarity(_db[name], "strings", strings)
+	instance, ratio = _set_similarity(_db[name]["hashes"], "strings", strings)
 
 	return { "library": instance, "ratio": ratio }
 
 def check(strings, name = None):
-	db = Shufel("file://db")
+	db = Shufel("db")
 
 	# Find similarity with a particular library name
 	if name is not None:
@@ -306,7 +325,7 @@ def check(strings, name = None):
 		if (highest is None) or (sim["ratio"] > highest["ratio"]):
 			highest = sim
 
-	db.close()
+	# db.close()
 	return highest["library"]
 
 if __name__ == "__main__":
