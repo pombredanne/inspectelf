@@ -18,6 +18,8 @@ from glob import glob
 from versions_download import library_name
 from ignores import *
 from cstrings import clang_parse
+import time
+from console_progressbar import ProgressBar
 
 def strings(filename, min=4):
 	# with open(filename, errors="ignore") as f:  # Python 3.x
@@ -48,31 +50,23 @@ def _process_library(db, proj, version, arch, candidate):
 			continue
 
 		# Don't parse the same file again
-		if h in db[proj]["hashes"].keys():
-			print "Already in DB."
-
-			# Fix version info as it's usually better the 2nd time
-			if len(version) > db[proj]["hashes"][h]["version"]:
-				db[proj]["hashes"][h]["version"] = version
-				db.sync()
-
+		if (version in db[proj]["versions"]) and (h in db[proj]["versions"][version]):
 			continue
 
-		# Start parsing every candidate into DB
-		db[proj]["hashes"][h] = {
-			"hash": h,
-			"version": version,
-			"arch": arch,
-			"strings": [ s for s in strings(so) ]
-			}
-
-		if version not in db[proj]["versions"].keys():
+		if version not in db[proj]["versions"]:
 			db[proj]["versions"][version] = []
 
-		db[proj]["versions"][version].append(h)
+		db[proj]["version"][version].append(h)
+
+		# Start parsing every candidate into DB
+		db[proj].cinsert("hashes", h, [ s for s in strings(so) ])
 
 		# Write to DB so we won't lose any data
 		db.sync()
+
+		return
+
+		# ### TODO: NEED TO RETHINK PLAUSABILITY OF BINARY BASED SIMILARITY ### #
 
 		# Build CFG
 		basic_blocks = cfg.build(so)
@@ -86,27 +80,59 @@ def _process_library(db, proj, version, arch, candidate):
 
 		db.sync()
 
-def _process_src(db, proj, version, srcpath):
+def _process_src(_db, proj, version, srcpath):
 	# Don't parse again the same version
-	for h in db[proj]["hashes"].keys():
-		if version == db[proj]["hashes"][h]["version"] and db[proj]["hashes"][h]["arch"] is None:
-			print "Source %s v%s already parsed" % (proj, version)
-			return
+	if version in _db[proj]["versions"].keys():
+		print "Source %s v%s already parsed" % (proj, version)
+		return
+
+	print "Processing %s v%s..." % (proj, version)
 
 	# List all files in directory
 	files = [y for x in os.walk(srcpath) for y in glob(os.path.join(x[0], '*'))]
 
-	strs = []
+	strs = set()
+
+	c = 0
+
+	pb = ProgressBar(total=100, suffix="%s v%s" % (proj, version), decimals=3, length=100, fill='X', zfill='-')
+	pb.print_progress_bar(0)
 
 	for f in files:
+		c += 1
+		pb.print_progress_bar(100 * float(c)/len(files))
+
 		if os.path.isdir(f):
 			continue
 
-		res = clang_parse(f)
-		strs += res["strings"] + res["functions"]
+		if not os.path.exists(f):
+			continue
+
+		with open(f, "rb") as fp:
+			sha = hashlib.sha256()
+			sha.update(fp.read())
+			hash = sha.digest().encode("HEX")
+
+		if hash in _db[proj]["srcs"]:
+			print "%s already indexed" % hash
+		else:
+			try:
+				res = clang_parse(f)
+
+				s = set(res["strings"] + res["functions"])
+			except Exception, e:
+				continue
+
+			_db[proj].cinsert("srcs", hash, s)
+			_db.sync()
+
+		strs = strs.union(_db[proj].cget("srcs", hash))
+
+		# if c == 5:
+		#	break
 
 	# Add to db
-	learn(proj, strs, version)
+	learn(_db, proj, strs, version)
 
 def build_db(root):
 	db = Shufel("db")
@@ -115,10 +141,19 @@ def build_db(root):
 	for proj in os.listdir(root):
 		# Create a new project in db
 		if proj not in db.keys():
-			db[proj] = {
-					"hashes": {},
-					"versions": {}
-				}
+			db[proj] = Shufel()
+			db[proj].cdef("hashes")
+			db[proj].cdef("srcs")
+			db[proj]["versions"] = {}
+
+			db.sync()
+
+			# db[proj] = {
+			#		"hashes": {},
+			#		"versions": {},
+			#		"base": None,
+			#		"srcs": {},
+			#	}
 
 		for version in os.listdir(os.path.sep.join((root, proj))):
 			for arch in os.listdir(os.path.sep.join((root, proj, version))):
@@ -137,11 +172,11 @@ def _set_similarity(library, parameter, target_set):
 
 	# No exact match. Look for the most similar
 	for h in library:
-		instance = library["hashes"][h]
+		instance = library[h]
 
 		# Check if there is any metadata for this parameter
 		if parameter not in instance:
-			print "No %s for library" % parameter
+			# print "No %s for library" % parameter
 			continue
 
 		ratio = len(set.intersection(set(instance[parameter]), set(target_set))) / float(len(set.union(set(instance[parameter]), set(target_set))))
@@ -160,7 +195,7 @@ def _cfg_bloomfilter_similarity(library, bloomfilter):
 	# No exact match. Look for the most similar
 	for h in library:
 		count = 0
-		instance = library["hashes"][h]
+		instance = library[h]
 
 		if "bloomfilter" not in instance:
 			continue
@@ -182,6 +217,22 @@ def _cfg_bloomfilter_similarity(library, bloomfilter):
 
 	return (highest_instance, float(highest_count) / float(popcount))
 
+def _string_similarity(library, target_set):
+	highest_ratio = 0
+	highest_instance = None
+
+	base = library["base"]
+
+	for h in library["hashes"].keys():
+		version_set = library["hashes"][h]["strings"].union(library["base"])
+		ratio = len(set.intersection(version_set, target_set)) / float(len(set.union(version_set, target_set)))
+
+		if ratio > highest_ratio:
+			highest_ratio = ratio
+			highest_instance = h
+
+	return (library["hashes"][highest_instance], highest_ratio)
+
 def _libname_similarity(elffile, libname):
 	db = Shufel("db")
 
@@ -198,7 +249,7 @@ def _libname_similarity(elffile, libname):
 	similarities = []
 
 	# String similarity
-	str_similarity = _set_similarity(db[libname]["hashes"], "strings", [ s for s in strings(elffile) ])
+	str_similarity = _string_similarity(db[libname], set([ s for s in strings(elffile) ]))
 
 	if str_similarity[0] is not None:
 		print libname, str_similarity[1]
@@ -279,27 +330,27 @@ def similarity(elffile):
 	# db.close()
 	return result
 
-def learn(name, strings, version):
-	db = Shufel("db")
+def learn(_db, proj, strings, version):
 
 	s = hashlib.sha256()
 	s.update("".join(strings))
 	h = s.digest().encode("HEX")
 
-	db[name]["hashes"][h] = {
-			"hash": h,
-			"version": version,
-			"arch": None,
-			"strings": strings
-		}
+	print "Hashing %d strings" % len(strings)
+	print "Hash: %s" % h
 
-	if version not in db[name]["versions"].keys():
-		db[name]["versions"][version] = []
+	s = set(strings)
 
-	db[name]["versions"][version].append(h)
+	print "Set size: %d" % len(s)
 
-	db.sync()
-	# db.close()
+	_db[proj].cinsert("hashes", h, strings)
+
+	if version not in _db[proj]["versions"].keys():
+		_db[proj]["versions"][version] = []
+
+	_db[proj]["versions"][version].append(h)
+
+	_db.sync()
 
 def _check(_db, strings, name):
 	# Find similarity

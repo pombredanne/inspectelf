@@ -33,7 +33,7 @@ def _cfuncs(node):
 	return funcs
 
 def clang_parse(filename):
-	print "CLANG %s" % filename
+	# print "\rCLANG %s..." % filename + " " * 32,
 	index = clang.cindex.Index.create()
 	tu = index.parse(filename)
 
