@@ -21,6 +21,9 @@ from cstrings import clang_parse
 import time
 from console_progressbar import ProgressBar
 
+import redis
+from redisdb import *
+
 def strings(filename, min=4):
 	# with open(filename, errors="ignore") as f:  # Python 3.x
 	with open(filename, "rb") as f:           # Python 2.x
@@ -59,10 +62,7 @@ def _process_library(db, proj, version, arch, candidate):
 		db[proj]["version"][version].append(h)
 
 		# Start parsing every candidate into DB
-		db[proj].cinsert("hashes", h, [ s for s in strings(so) ])
-
-		# Write to DB so we won't lose any data
-		db.sync()
+		db[proj]["hashes"]["hashes"][h] = [ s for s in strings(so) ]
 
 		return
 
@@ -123,37 +123,27 @@ def _process_src(_db, proj, version, srcpath):
 			except Exception, e:
 				continue
 
-			_db[proj].cinsert("srcs", hash, s)
-			_db.sync()
+			_db[proj]["srcs"][hash] = s
 
-		strs = strs.union(_db[proj].cget("srcs", hash))
+		strs = strs.union(_db[proj]["srcs"][hash])
 
-		# if c == 5:
-		#	break
+		if c == 5:
+			break
 
 	# Add to db
 	learn(_db, proj, strs, version)
 
 def build_db(root):
-	db = Shufel("db")
+	db = redisdb(redis.Redis(host = "localhost", port = 6379))
 
 	# First directory heirarchy holds project names
 	for proj in os.listdir(root):
 		# Create a new project in db
 		if proj not in db.keys():
-			db[proj] = Shufel()
-			db[proj].cdef("hashes")
-			db[proj].cdef("srcs")
+			db[proj] = {}
+			db[proj]["hashes"] = {}
+			db[proj]["srcs"] = {}
 			db[proj]["versions"] = {}
-
-			db.sync()
-
-			# db[proj] = {
-			#		"hashes": {},
-			#		"versions": {},
-			#		"base": None,
-			#		"srcs": {},
-			#	}
 
 		for version in os.listdir(os.path.sep.join((root, proj))):
 			for arch in os.listdir(os.path.sep.join((root, proj, version))):
@@ -164,7 +154,6 @@ def build_db(root):
 						_process_src(db, proj, version, c)
 					else:
 						_process_library(db, proj, version, arch, c)
-	# db.close()
 
 def _set_similarity(library, parameter, target_set):
 	highest_ratio = 0
@@ -233,16 +222,14 @@ def _string_similarity(library, target_set):
 
 	return (library["hashes"][highest_instance], highest_ratio)
 
-def _libname_similarity(elffile, libname):
-	db = Shufel("db")
-
+def _libname_similarity(db, elffile, libname):
 	# Start by finding an exact match
 	with open(elffile, "rb") as f:
 		s = hashlib.sha256()
 		s.update(f.read())
 		h = s.digest().encode("hex")
 
-	if h in db[libname]["hashes"].keys():
+	if h in db[libname]["hashes"]:
 		# Ratio is 1 because we found an exact match
 		return {"libname": libname, "instance": db[libname]["hashes"][h], "ratio": 1}
 
@@ -303,7 +290,7 @@ def _libname_similarity(elffile, libname):
 	return {"libname": libname, "instance": highest_instnace, "ratio": highest_ratio}
 
 def similarity(elffile):
-	db = Shufel("db")
+	db = redisdb(redis.Redis(host = "localhost", port = 6379))
 
 	libname = library_name(os.path.basename(elffile))
 
@@ -311,23 +298,22 @@ def similarity(elffile):
 		raise Exception("Unsupported library name")
 
 	# Library not indexed!
-	if libname in db.keys() and len(db[libname].keys()) > 0:
+	if libname in db and len(db[libname].keys()) > 0:
 		print "Checking with %s" % libname
-		return _libname_similarity(elffile, libname)
+		return _libname_similarity(db, elffile, libname)
 
 	highest_ratio = 0
 	highest_result = 0
 
 	# Try to find what's the actual library is
-	for libname in db.keys():
+	for libname in db:
 		print "Checking with %s" % libname
-		result = _libname_similarity(elffile, libname)
+		result = _libname_similarity(db, elffile, libname)
 
 		if result["ratio"] > highest_ratio:
 			highest_ratio = result["ratio"]
 			highest_result = result
 
-	# db.close()
 	return result
 
 def learn(_db, proj, strings, version):
@@ -343,14 +329,12 @@ def learn(_db, proj, strings, version):
 
 	print "Set size: %d" % len(s)
 
-	_db[proj].cinsert("hashes", h, strings)
+	_db[proj]["hashes"][h] = s
 
 	if version not in _db[proj]["versions"].keys():
 		_db[proj]["versions"][version] = []
 
 	_db[proj]["versions"][version].append(h)
-
-	_db.sync()
 
 def _check(_db, strings, name):
 	# Find similarity
@@ -359,11 +343,11 @@ def _check(_db, strings, name):
 	return { "library": instance, "ratio": ratio }
 
 def check(strings, name = None):
-	db = Shufel("db")
+	db = redisdb(redis.Redis(host = "localhost", port = 6379))
 
 	# Find similarity with a particular library name
 	if name is not None:
-		sim = _check(strings, name)
+		sim = _check(db, strings, name)
 
 		return sim
 
@@ -371,7 +355,7 @@ def check(strings, name = None):
 	highest = None
 
 	for n in db.keys():
-		sim = _check(strings, n)
+		sim = _check(db, strings, n)
 
 		if (highest is None) or (sim["ratio"] > highest["ratio"]):
 			highest = sim
