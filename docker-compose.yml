@@ -1,0 +1,11 @@
+version: '2'
+
+services:
+ inspectelf-redis:
+  image: 'redis:latest'
+  environment:
+   - ALLOW_EMPTY_PASSWORD=yes
+  ports:
+   - '6379:6379'
+  volumes:
+   - /home/giliy/inspectelf/redis:/data

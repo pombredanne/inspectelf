@@ -226,13 +226,6 @@ def filter_kconfig(kconfig):
 			invalid["add"].append(c)
 	return invalid
 
-def parse_kconfig(kernel)
-	config = kconfig(kernel)
-
-	parsed = parse_kconfig(config)
-
-	return filter_kconfig(parsed)
-
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description = "Extract Linux kernel configuration file")
 	parser.add_argument("kernel", help = "Linux Kernel File (vmlinux)")

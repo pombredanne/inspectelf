@@ -59,10 +59,10 @@ def _process_library(db, proj, version, arch, candidate):
 		if version not in db[proj]["versions"]:
 			db[proj]["versions"][version] = []
 
-		db[proj]["version"][version].append(h)
+		db[proj]["versions"][version].append(h)
 
 		# Start parsing every candidate into DB
-		db[proj]["hashes"]["hashes"][h] = [ s for s in strings(so) ]
+		db[proj]["hashes"][h] = [ s for s in strings(so) ]
 
 		return
 
@@ -113,22 +113,27 @@ def _process_src(_db, proj, version, srcpath):
 			sha.update(fp.read())
 			hash = sha.digest().encode("HEX")
 
+		#print "Trying %s" % f
+
 		if hash in _db[proj]["srcs"]:
-			print "%s already indexed" % hash
+			pass
+			#print "%s already indexed" % hash
 		else:
+			# print "Building %s" % f
 			try:
 				res = clang_parse(f)
 
 				s = set(res["strings"] + res["functions"])
 			except Exception, e:
+				print "Error in building source file %s" % f
 				continue
 
 			_db[proj]["srcs"][hash] = s
 
 		strs = strs.union(_db[proj]["srcs"][hash])
 
-		if c == 5:
-			break
+		# if c == 5:
+		#	break
 
 	# Add to db
 	learn(_db, proj, strs, version)
@@ -206,21 +211,38 @@ def _cfg_bloomfilter_similarity(library, bloomfilter):
 
 	return (highest_instance, float(highest_count) / float(popcount))
 
+def _hash_to_version(library, h):
+	for v in library["versions"]:
+		for hv in library["versions"][v]:
+			if hv == h:
+				return v
+
+	return None
+
 def _string_similarity(library, target_set):
 	highest_ratio = 0
 	highest_instance = None
 
-	base = library["base"]
-
 	for h in library["hashes"].keys():
-		version_set = library["hashes"][h]["strings"].union(library["base"])
+		version_set = library["hashes"][h]
+
+		# TODO: Decide which one of these two calculations is better.
+		# The first one yields much lower percentages as the strings gathered from sources
+		# will always be larger in numbers than those gathered from the binary itself.
+		# Comparing according to lower numbers may yield inaccurate false positives with
+		# close versions...
 		ratio = len(set.intersection(version_set, target_set)) / float(len(set.union(version_set, target_set)))
+
+		# ratio = len(set.intersection(version_set, target_set)) / float(len(target_set))
+		print "%s = %f" % (_hash_to_version(library, h), ratio)
 
 		if ratio > highest_ratio:
 			highest_ratio = ratio
 			highest_instance = h
 
-	return (library["hashes"][highest_instance], highest_ratio)
+	highest_version = _hash_to_version(library, highest_instance)
+
+	return {"version": highest_version, "ratio": highest_ratio}
 
 def _libname_similarity(db, elffile, libname):
 	# Start by finding an exact match
@@ -233,10 +255,10 @@ def _libname_similarity(db, elffile, libname):
 		# Ratio is 1 because we found an exact match
 		return {"libname": libname, "instance": db[libname]["hashes"][h], "ratio": 1}
 
-	similarities = []
-
 	# String similarity
 	str_similarity = _string_similarity(db[libname], set([ s for s in strings(elffile) ]))
+
+	return {"libname": libname, "version": str_similarity["version"], "ratio": str_similarity["ratio"]}
 
 	if str_similarity[0] is not None:
 		print libname, str_similarity[1]
@@ -374,7 +396,7 @@ if __name__ == "__main__":
 	elif args.mode == "identify":
 		result = similarity(args.path)
 		if result is not None:
-			print "%s v%s (%f)" % (result["libname"], result["instance"]["version"], result["ratio"])
+			print "%s v%s (%f)" % (result["libname"], result["version"], result["ratio"])
 		else:
 			print "No matching result"
 	else:
