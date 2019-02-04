@@ -20,8 +20,6 @@ from rpm2cpio import *
 from libarchive import *
 from HTMLParser import HTMLParser
 from shufel import Shufel
-# from shove import Shove
-# Shufel = Shove
 
 # For xz
 try:
@@ -47,6 +45,8 @@ class Parser(HTMLParser):
 					continue
 
 				url = attr[1]
+				if len(url) == 0:
+					continue
 
 				# Mark subdirectories
 				if url[0] != '/' and url[-1] == '/' and url.startswith("lib"):
@@ -55,6 +55,7 @@ class Parser(HTMLParser):
 				should_download = False
 				for ext in extensions:
 					if url.endswith(".%s" % ext):
+
 						should_download = True
 						break
 
