@@ -15,6 +15,7 @@ import tempfile
 import gzip
 import shutil
 import arpy
+import urlparse
 from tempfile import *
 from rpm2cpio import *
 from libarchive import *
@@ -85,7 +86,7 @@ def library_name(filename):
 
 
 	if m is None:
-		return None
+		return filename
 
 	# Get the library name
 	return m.groups()[0]
@@ -108,8 +109,22 @@ def dissect_links(links):
 		# Get the filename to be downloaded
 		filename = link[link.rfind('/') + 1:]
 
-		# Get the library name
-		libname = library_name(filename)
+		if "github.com" in link:
+			m = re.match("http[s]?://github\.com/[a-z0-9A-Z]+/([^/]+)", urlparse.urlparse(link).geturl())
+
+			url = urlparse.urlparse(link)
+
+			link = "%s://%s%s" % (url.scheme, url.netloc, url.path.replace("//", "/"))
+
+			m = re.match("http[s]?://github\.com/[^/]+/([^/]+)", link)
+
+			if m is None:
+				continue
+
+			libname = m.groups()[0]
+		else:
+			# Get the library name
+			libname = library_name(filename)
 
 		if libname is None:
 			continue
@@ -129,7 +144,7 @@ def dissect_links(links):
 			v = m.groups()[0]
 		else:
 			# Pattern \d+\.\d+\.\d+ might fish dates from time to time X_X
-			patterns = [".+[\-_](\d+\.\d+\.\d+[a-z]?).*", ".+[\-_](\d+\.\d+\.\d+).*", ".+[\-_](\d+\.\d+).*"]
+			patterns = [".+[\-_](\d+\.\d+\.\d+[a-z]?).*", ".+[\-_](\d+\.\d+\.\d+).*", ".+[\-_](\d+\.\d+).*", "v([0-9]+\.[0-9]+\.[0-9]+)", "v([0-9]+)"]
 			for p in patterns:
 				m = re.match(p, filename)
 				if m is not None:

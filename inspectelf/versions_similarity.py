@@ -160,57 +160,6 @@ def build_db(root):
 					else:
 						_process_library(db, proj, version, arch, c)
 
-def _set_similarity(library, parameter, target_set):
-	highest_ratio = 0
-	highest_instance = None
-
-	# No exact match. Look for the most similar
-	for h in library:
-		instance = library[h]
-
-		# Check if there is any metadata for this parameter
-		if parameter not in instance:
-			# print "No %s for library" % parameter
-			continue
-
-		ratio = len(set.intersection(set(instance[parameter]), set(target_set))) / float(len(set.union(set(instance[parameter]), set(target_set))))
-
-		if ratio > highest_ratio:
-			highest_ratio = ratio
-			highest_instance = instance
-
-	return (highest_instance, highest_ratio)
-
-def _cfg_bloomfilter_similarity(library, bloomfilter):
-	highest_count = 0
-	highest_instance = None
-	popcount = 0
-
-	# No exact match. Look for the most similar
-	for h in library:
-		count = 0
-		instance = library[h]
-
-		if "bloomfilter" not in instance:
-			continue
-
-		for b1, b2 in zip(bloomfilter, instance["bloomfilter"]):
-			for i in xrange(8):
-				# Popcount
-				if (b1 & (1 << i)) != 0:
-					popcount += 1
-
-				if ((b1 & (1 << i)) == (b2 & (1 << i)) != 0) :
-					count += 1
-
-		if count > highest_count:
-			highest_count = count
-			highest_instance = instance
-	if popcount == 0:
-		return (None, 0)
-
-	return (highest_instance, float(highest_count) / float(popcount))
-
 def _hash_to_version(library, h):
 	for v in library["versions"]:
 		for hv in library["versions"][v]:
@@ -234,7 +183,7 @@ def _string_similarity(library, target_set):
 		ratio = len(set.intersection(version_set, target_set)) / float(len(set.union(version_set, target_set)))
 
 		# ratio = len(set.intersection(version_set, target_set)) / float(len(target_set))
-		print "%s = %f" % (_hash_to_version(library, h), ratio)
+		# print "%s = %f" % (_hash_to_version(library, h), ratio)
 
 		if ratio > highest_ratio:
 			highest_ratio = ratio
@@ -244,99 +193,43 @@ def _string_similarity(library, target_set):
 
 	return {"version": highest_version, "ratio": highest_ratio}
 
-def _libname_similarity(db, elffile, libname):
-	# Start by finding an exact match
-	with open(elffile, "rb") as f:
-		s = hashlib.sha256()
-		s.update(f.read())
-		h = s.digest().encode("hex")
-
-	if h in db[libname]["hashes"]:
-		# Ratio is 1 because we found an exact match
-		return {"libname": libname, "instance": db[libname]["hashes"][h], "ratio": 1}
-
+def identify(_db, proj, strs):
 	# String similarity
-	str_similarity = _string_similarity(db[libname], set([ s for s in strings(elffile) ]))
+	str_similarity = _string_similarity(_db[proj], set(strs))
 
-	return {"libname": libname, "version": str_similarity["version"], "ratio": str_similarity["ratio"]}
+	return {"libname": proj, "version": str_similarity["version"], "ratio": str_similarity["ratio"]}
 
-	if str_similarity[0] is not None:
-		print libname, str_similarity[1]
-		similarities.append(str_similarity)
 
-	# CFG Similarity
-	blocks = cfg.build(elffile)
-
-	if blocks is not None:
-		# CFG hashes
-		hashes = cfg.hashes(blocks)
-
-		result = _set_similarity(db[libname]["hashes"], "hashes", hashes)
-
-		# Get hash similarity
-		if result[0] is not None:
-			similarities.append(result)
-
-		# CFG Bloomfilter
-		bloomfilter = cfg.bloomfilter(blocks)
-
-		result = _cfg_bloomfilter_similarity(db[libname]["hashes"], bloomfilter)
-
-		if result[0] is not None:
-			# Get bloomfilter match
-			similarities.append(result)
-
-	results = {}
-
-	# Merge similarities according to specific instances
-	for sim in similarities:
-		if sim[0]["hash"] not in results:
-			results[sim[0]["hash"]] = []
-
-		results[sim[0]["hash"]].append(sim)
-
-	highest_ratio = 0
-	highest_instnace = None
-
-	# Find what instance is the most similar
-	for h in results:
-		# Get only the ratio part out of the tuples
-		ratio = reduce(lambda x, y: (x[0], x[1] + y[1]), results[h])[1] / float(len(results[h]))
-
-		if ratio > highest_ratio:
-			highest_ratio = ratio
-			highest_instnace = db[libname]["hashes"][h]
-
-	# db.close()
-
-	return {"libname": libname, "instance": highest_instnace, "ratio": highest_ratio}
-
-def similarity(elffile):
+def similarity(filename):
 	db = redisdb(redis.Redis(host = "localhost", port = 6379))
 
-	libname = library_name(os.path.basename(elffile))
+	libname = library_name(os.path.basename(filename))
 
 	if libname is None:
 		raise Exception("Unsupported library name")
 
+	strs = set([ s for s in strings(filename) ])
+
 	# Library not indexed!
 	if libname in db and len(db[libname].keys()) > 0:
-		print "Checking with %s" % libname
-		return _libname_similarity(db, elffile, libname)
+		print "Checking %s" % libname
+		return identify(db, libname, strs)
 
 	highest_ratio = 0
 	highest_result = 0
 
 	# Try to find what's the actual library is
 	for libname in db:
-		print "Checking with %s" % libname
-		result = _libname_similarity(db, elffile, libname)
+		print "Checking %s" % libname
+		result = identify(db, libname, strs)
+
+		# print result
 
 		if result["ratio"] > highest_ratio:
 			highest_ratio = result["ratio"]
 			highest_result = result
 
-	return result
+	return highest_result
 
 def learn(_db, proj, strings, version):
 
@@ -357,33 +250,6 @@ def learn(_db, proj, strings, version):
 		_db[proj]["versions"][version] = []
 
 	_db[proj]["versions"][version].append(h)
-
-def _check(_db, strings, name):
-	# Find similarity
-	instance, ratio = _set_similarity(_db[name]["hashes"], "strings", strings)
-
-	return { "library": instance, "ratio": ratio }
-
-def check(strings, name = None):
-	db = redisdb(redis.Redis(host = "localhost", port = 6379))
-
-	# Find similarity with a particular library name
-	if name is not None:
-		sim = _check(db, strings, name)
-
-		return sim
-
-	# If name is not given, search the entire DB
-	highest = None
-
-	for n in db.keys():
-		sim = _check(db, strings, n)
-
-		if (highest is None) or (sim["ratio"] > highest["ratio"]):
-			highest = sim
-
-	# db.close()
-	return highest["library"]
 
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description = "Inspect libraries and sources delivered by versions_download.py and create a rich database for binary similarity matching")
