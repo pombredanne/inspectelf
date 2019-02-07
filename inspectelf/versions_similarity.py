@@ -82,8 +82,8 @@ def _process_library(db, proj, version, arch, candidate):
 
 def _process_src(_db, proj, version, srcpath):
 	# Don't parse again the same version
-	if version in _db[proj]["versions"].keys():
-		print "Source %s v%s already parsed" % (proj, version)
+	if version in _db[proj]["versions"].keys() and proj != "libpng":
+		# print "Source %s v%s already parsed" % (proj, version)
 		return
 
 	print "Processing %s v%s..." % (proj, version)
@@ -115,17 +115,19 @@ def _process_src(_db, proj, version, srcpath):
 
 		#print "Trying %s" % f
 
-		if hash in _db[proj]["srcs"]:
+		if hash in _db[proj]["srcs"] and proj != "libpng": # and hash != "9f9f4c5d29b390035c00a4f5774d41c374b40d5bd9bf6c8f9c83c06007c48b2c":
 			pass
 			#print "%s already indexed" % hash
 		else:
 			# print "Building %s" % f
 			try:
-				res = clang_parse(f)
+				res = clang_parse(f) # , debug = hash == "9f9f4c5d29b390035c00a4f5774d41c374b40d5bd9bf6c8f9c83c06007c48b2c")
+
+				# print res
 
 				s = set(res["strings"] + res["functions"])
 			except Exception, e:
-				print "Error in building source file %s" % f
+				print "Error in building source file %s" % f, e
 				continue
 
 			_db[proj]["srcs"][hash] = s
@@ -172,6 +174,8 @@ def _string_similarity(library, target_set):
 	highest_ratio = 0
 	highest_instance = None
 
+	# print target_set
+
 	for h in library["hashes"].keys():
 		version_set = library["hashes"][h]
 
@@ -182,8 +186,11 @@ def _string_similarity(library, target_set):
 		# close versions...
 		ratio = len(set.intersection(version_set, target_set)) / float(len(set.union(version_set, target_set)))
 
+		# if ratio > 0.09 or ratio < 0.025:
+		# 	print set.intersection(version_set, target_set)
+
 		# ratio = len(set.intersection(version_set, target_set)) / float(len(target_set))
-		# print "%s = %f" % (_hash_to_version(library, h), ratio)
+		print "%s = %f" % (_hash_to_version(library, h), ratio)
 
 		if ratio > highest_ratio:
 			highest_ratio = ratio
