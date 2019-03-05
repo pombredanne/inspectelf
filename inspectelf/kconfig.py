@@ -2,6 +2,7 @@
 
 import argparse
 import pprint
+import string
 # Compression Algorithms
 import gzip
 import bz2
@@ -11,15 +12,30 @@ import re
 import tempfile
 from os.path import basename
 import magic
+import itb
 
 supported_archs = [ 'X86_64', 'X86_32', 'ARM64', 'ARM' ]
+
+def strings(filename, min=4):
+	# with open(filename, errors="ignore") as f:  # Python 3.x
+	with open(filename, "rb") as f:           # Python 2.x
+		result = ""
+		for c in f.read():
+			if c in string.printable:
+				result += c
+				continue
+			if len(result) >= min:
+				yield result
+			result = ""
+		if len(result) >= min and result not in ignore_strings:  # catch result at EOF
+			yield result
 
 # Gzip has an issue with reading trailing garbage. Read byte-by-byte.
 # NOTE: This CAN be optimized.
 def gzip_read(g):
 	b = ""
 	buddies = [ 2 ** i for i in xrange(12) ][::-1]
-	
+
 	for buddy in buddies:
 		while True:
 			try:
@@ -32,23 +48,17 @@ def gzip_read(g):
 def vmlinuz(filename):
 	filters = {
 			'\037\213\010': "gzip",
-				
 			'\3757zXZ\000': "xz",
-				
 			'BZh': "bzip2",
-				
 			'\135\0\0\0': "lzma",
-				
 			'\211\114\132': "lzop",
-				
 			'\002!L\030': "lz4",
-				
 			'(\265/\375': "zstd"
 		}
 
 	with open(filename) as f:
 		d = f.read()
-		
+
 		for f in filters:
 			pos = d.find(f)
 			if pos != -1:
@@ -57,10 +67,10 @@ def vmlinuz(filename):
 					tmp.write(d[pos:])
 					tmp.flush()
 					tmp.seek(0)
-					
+
 					if filters[f] == "gzip":
 						gz = gzip.GzipFile(fileobj = tmp, mode = 'rb')
-						
+
 						# Read the kernel image
 						kernel = gzip_read(gz)
 
@@ -73,12 +83,52 @@ def vmlinuz(filename):
 						kernel = backports.lzma.decompress(d[pos:])
 
 					# print magic.detect_from_content(kernel)
-					
+
 					if magic.detect_from_content(kernel).mime_type == "application/x-executable":
 						return kernel
 
 		raise Exception("Unsupported vmlinuz compression")
-	
+
+def raw_search(filename):
+	config = []
+
+	raw_image = itb.extract_kernel(filename)
+
+	# Search over strings and try to figure out the config from symbols.
+	img_strings = " ".join([ s for s in strings(filename) ])
+	config.append("CONFIG_%s=y" % (itb.kernel_arch(raw_image)))
+
+	# Search for strings in image to see heuristically find features
+	keywords = {
+			"kmem": "DEVKMEM",
+			"linux-vdso": "COPAT_VDSO",
+			"inet_diag": "INET_DIAG",
+			"kexec": "KEXEC",
+			"page_poison": "PAGE_POISONING",
+			"debugfs": "DEBUGFS",
+			"__stack_chk_guard": ["STACKPROTECTOR_STRONG", "CC_STACKPROTECTOR_STRONG"],
+			"isolat": "PAGE_TABLE_ISOLATION",
+			"randomize_va_space": "RANDOMIZE_MEMORY",
+			"refcount": "REFCOUNT_FULL",
+			"seccomp": "SECCOMP",
+			"seccomp_filter": "SECCOMP_FILTER",
+			"module.sig_enforce": ["MODULE_SIG_FORCE", "MODULE_SIG_ALL", "MODULE_SIG"],
+			"retpoline": "RETPOLINE",
+			"Syncookies": "SYN_COOKIES",
+			"dmesg_restrict": "SECURITY_DMESG_RESTRICT",
+			"slub_debug": "SLUB_DEBUG"
+			}
+
+	for k in keywords:
+		if k in img_strings:
+			if isinstance(keywords[k], list):
+				for conf in keywords[k]:
+					config.append("CONFIG_%s=y" % conf)
+			else:
+				config.append("CONFIG_%s=y" % keywords[k])
+
+	return "\n".join(config)
+
 def kconfig(filename):
 	m = magic.detect_from_filename(filename)
 
@@ -88,22 +138,22 @@ def kconfig(filename):
 
 		with tempfile.NamedTemporaryFile() as tmp:
 			kernel = vmlinuz(filename)
-			
+
 			with open("kernel", "wb") as f:
 				f.write(kernel)
-			
+
 			tmp.write(kernel)
 			tmp.flush()
 			tmp.seek(0)
-			
+
 			return kconfig(tmp.name)
-			
+
 
 	with open(filename, "rb") as f:
 		d = f.read()
 
 		off = d.find("IKCFG_ST\037\213\010") + 8
-				
+
 		f.seek(off)
 
 		g = gzip.GzipFile(fileobj = f, mode = 'rb')
@@ -111,7 +161,10 @@ def kconfig(filename):
 		data = gzip_read(g)
 
 	if len(data) == 0:
-		raise Exception("No .config file")
+		data = raw_search(filename)
+
+		if len(data) == 0:
+			raise Exception("No .config file")
 
 	return data
 
@@ -140,7 +193,7 @@ def parse_kconfig(kconfig):
 			m = non_matching.search(line)
 			if m is not None:
 				config[m.groups()[0]] = 'n'
-				
+
 	return config
 
 def filter_kconfig(kconfig):
@@ -148,6 +201,7 @@ def filter_kconfig(kconfig):
 	FUZZY_BLACK_RULES = [
 			]
 	EXACT_BLACK_RULES = [
+						"DEBUGFS",
 						"IKCONFIG",
 						"DEVMEM",
 						"ACPI_CUSTOM_METHOD",
@@ -162,14 +216,12 @@ def filter_kconfig(kconfig):
 						"BUG_ON_DATA_CORRUPTION",
 						"SCHED_STACK_END_CHECK",
 						"PAGE_POISONING",
+						"SLUB_DEBUG",
 						"SLAB_FREELIST_HARDENED",
 						"SLAB_FREELIST_RANDOM",
 						"HARDENED_USERCOPY",
 						"HARDENED_USERCOPY_FALLBACK",
 						"FORTIFY_SOURCE",
-						"MODULE_SIG",
-						"MODULE_SIG_ALL",
-						"MODULE_SIG_FORCE",
 			]
 	EXACT_WHITE_RULES = [
 						"BUG",
@@ -177,23 +229,27 @@ def filter_kconfig(kconfig):
 						"STACKPROTECTOR_STRONG",
 						"CC_STACKPROTECTOR_STRONG",
 						"STRICT_MODULE_RWX",
-						
+
 						"PAGE_TABLE_ISOLATION",
 						"RANDOMIZE_MEMORY",
 						"SECURITY",
 						"REFCOUNT_FULL",
 						"HIGHMEM64G",
-						"X86_PAE",
 						"PAGE_TABLE_ISOLATION",
 						"SECURITY_LOADPIN",
 						"SECURITY_DMESG_RESTRICT",
 						"SECCOMP",
 						"SECCOMP_FILTER",
-						"IO_STRICT_DEVMEM"
+						"IO_STRICT_DEVMEM",
+						"MODULE_SIG",
+						"MODULE_SIG_ALL",
+						"MODULE_SIG_FORCE",
+
 			]
 
 	ARCH_EXACT_WHITE_RULES = {
 				"X86_32": [
+						"X86_PAE",
 						"RANDOMIZE_BASE",
 						"RETPOLINE",
 						"X86_SMAP",
@@ -202,13 +258,14 @@ def filter_kconfig(kconfig):
 						"GCC_PLUGIN_STACKLEAK",
 						"STRICT_DEVMEM",
 						"REFCOUNT_FULL"
-					]
+					],
+				"ARM64": [ ]
 				}
-	
+
 	print "Architecture: %s" % arch
-	
+
 	invalid = {"remove": [], "add": []}
-	
+
 	# for c in FUZZY_BLACK_RULES:
 	#	if c in config and kconfig[config] == 'y':
 	#		invalid["remove"].append(config)
@@ -220,7 +277,7 @@ def filter_kconfig(kconfig):
 	for c in EXACT_WHITE_RULES:
 		if (c in kconfig and kconfig[c] == 'n') or (c not in kconfig):
 			invalid["add"].append(c)
-				
+
 	for c in ARCH_EXACT_WHITE_RULES[arch]:
 		if (c in kconfig and kconfig[c] == 'n') or (c not in kconfig):
 			invalid["add"].append(c)
@@ -233,9 +290,9 @@ if __name__ == "__main__":
 	args = parser.parse_args()
 
 	config = kconfig(args.kernel)
-		
+
 	parsed = parse_kconfig(config)
-	
+
 	invalid_configs = filter_kconfig(parsed)
 
 	print "Invalid configs:"
