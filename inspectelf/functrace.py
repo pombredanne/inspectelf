@@ -5,7 +5,6 @@ import os
 import re
 from elftools.elf.elffile import ELFFile
 from capstone import *
-import pprint
 
 from functrace_arm import find_functions_arm
 from functrace_aarch64 import find_functions_aarch64
@@ -338,7 +337,7 @@ def fix_overlapping_ranges(functions):
 		ranges.append((s, e))
 	return ranges
 
-def traces(elffile, funcnames, callstack = False):
+def traces(elffile, funcnames):
 	print "Finding functions..."
 
 	# Find all functions within the ELF object
@@ -346,7 +345,7 @@ def traces(elffile, funcnames, callstack = False):
 
 	ranges = fix_overlapping_ranges(functions)
 
-	# print ["0x%x - 0x%x" % (start, end) for start, end in ranges]
+	print ["0x%x - 0x%x" % (start, end) for start, end in ranges]
 
 	print "Looking for imports..."
 
@@ -362,14 +361,6 @@ def traces(elffile, funcnames, callstack = False):
 	usages = find_usages(elffile, selected_imports)
 
 	symbols = find_symbols(elffile)
-
-	if not callstack:
-		res = {}
-
-		for candidate in usages:
-			res[imports[candidate]["name"]] = [ hex(u) for u in usages[candidate] ]
-
-		return res
 
 	res = {}
 
@@ -399,4 +390,4 @@ if __name__ == "__main__":
 	# Parse arguments
 	args = parser.parse_args()
 
-	pprint.PrettyPrinter(indent=4).pprint(traces(args.elf, ["sha", "aes", "des", "md5", "memcpy", "memset"]))
+	traces(args.elf, ["sha", "aes", "des", "md5", "memcpy", "memset"])

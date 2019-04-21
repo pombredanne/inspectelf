@@ -17,12 +17,54 @@ import json
 from glob import glob
 from versions_download import library_name
 from ignores import *
+from cfuncs import ctags
 from cstrings import clang_parse
 import time
 from console_progressbar import ProgressBar
 
 import redis
 from redisdb import *
+
+def versplit(v):
+	res = []
+	s = ""
+	for c in v:
+		if (len(s) == 0 or s[-1].isalpha() == c.isalpha()) and c != '.':
+			s += c
+		else:
+			res.append(s)
+			if c != '.':
+				s = c
+			else:
+				s = ""
+	if len(s) > 0:
+		res.append(s)
+
+	return res
+
+def vercmp(v0, v1):
+	v0 = versplit(v0)
+	v1 = versplit(v1)
+
+	# Pad to normalize lengths
+	if len(v0) < len(v1):
+		v0 += ["0"] * (len(v1) - len(v0))
+	else:
+		v1 += ["0"] * (len(v0) - len(v1))
+
+	for x, y in zip(v0, v1):
+		if len(x) == len(y) == 1:
+			x = ord(x)
+			y = ord(y)
+		else:
+			x = int(x)
+			y = int(y)
+
+		if x > y:
+			return 1
+		elif x < y:
+			return -1
+	return 0
 
 def strings(filename, min=4):
 	# with open(filename, errors="ignore") as f:  # Python 3.x
@@ -82,7 +124,7 @@ def _process_library(db, proj, version, arch, candidate):
 
 def _process_src(_db, proj, version, srcpath):
 	# Don't parse again the same version
-	if version in _db[proj]["versions"].keys() and proj != "libpng":
+	if version in _db[proj]["versions"].keys():
 		# print "Source %s v%s already parsed" % (proj, version)
 		return
 
@@ -92,7 +134,7 @@ def _process_src(_db, proj, version, srcpath):
 	files = [y for x in os.walk(srcpath) for y in glob(os.path.join(x[0], '*'))]
 
 	strs = set()
-
+	funcs = set()
 	c = 0
 
 	pb = ProgressBar(total=100, suffix="%s v%s" % (proj, version), decimals=3, length=100, fill='X', zfill='-')
@@ -115,30 +157,34 @@ def _process_src(_db, proj, version, srcpath):
 
 		#print "Trying %s" % f
 
-		if hash in _db[proj]["srcs"] and proj != "libpng": # and hash != "9f9f4c5d29b390035c00a4f5774d41c374b40d5bd9bf6c8f9c83c06007c48b2c":
+		if hash in _db[proj]["srcs"]: # and hash != "9f9f4c5d29b390035c00a4f5774d41c374b40d5bd9bf6c8f9c83c06007c48b2c":
 			pass
 			#print "%s already indexed" % hash
 		else:
 			# print "Building %s" % f
 			try:
 				res = clang_parse(f) # , debug = hash == "9f9f4c5d29b390035c00a4f5774d41c374b40d5bd9bf6c8f9c83c06007c48b2c")
+				ctags_funcs = ctags(f)
 
 				# print res
 
-				s = set(res["strings"] + res["functions"])
+				fun = set(res["functions"]).union(ctags_funcs)
+				s = set(res["strings"])
 			except Exception, e:
 				print "Error in building source file %s" % f, e
 				continue
 
-			_db[proj]["srcs"][hash] = s
+			_db[proj]["srcs"][hash] = {}
+			_db[proj]["srcs"][hash]["functions"] = fun
+			_db[proj]["srcs"][hash]["strings"] = s
 
-		strs = strs.union(_db[proj]["srcs"][hash])
+		funcs = funcs.union(_db[proj]["srcs"][hash]["functions"])
+		strs = strs.union(_db[proj]["srcs"][hash]["strings"])
 
-		# if c == 5:
-		#	break
+	print "Strings: %d Functions: %d" % (len(strs), len(funcs))
 
 	# Add to db
-	learn(_db, proj, strs, version)
+	learn(_db, proj, strs, version, funcs)
 
 def build_db(root):
 	db = redisdb(redis.Redis(host = "localhost", port = 6379))
@@ -151,6 +197,7 @@ def build_db(root):
 			db[proj]["hashes"] = {}
 			db[proj]["srcs"] = {}
 			db[proj]["versions"] = {}
+			db[proj]["base_version"] = None
 
 		for version in os.listdir(os.path.sep.join((root, proj))):
 			for arch in os.listdir(os.path.sep.join((root, proj, version))):
@@ -162,9 +209,17 @@ def build_db(root):
 					else:
 						_process_library(db, proj, version, arch, c)
 
+def _version_functions(_db, proj, version):
+	funcs = set()
+
+	for h in _db[proj]["versions"][version]["hashes"]:
+		funcs = funcs.union(_db[proj]["hashes"][h]["functions"])
+
+	return funcs
+
 def _hash_to_version(library, h):
 	for v in library["versions"]:
-		for hv in library["versions"][v]:
+		for hv in library["versions"][v]["hashes"]:
 			if hv == h:
 				return v
 
@@ -177,7 +232,11 @@ def _string_similarity(library, target_set):
 	# print target_set
 
 	for h in library["hashes"].keys():
-		version_set = library["hashes"][h]
+		# version_set = library["hashes"][h]["strings"]
+		version_set = set(library["hashes"][h]["strings"]).union(set(library["hashes"][h]["functions"]))
+
+		#if library["hashes"][h]["functions"] is not None:
+		#	version_set = version_set.union(library["hashes"][h]["functions"])
 
 		# TODO: Decide which one of these two calculations is better.
 		# The first one yields much lower percentages as the strings gathered from sources
@@ -189,7 +248,7 @@ def _string_similarity(library, target_set):
 		# if ratio > 0.09 or ratio < 0.025:
 		# 	print set.intersection(version_set, target_set)
 
-		# ratio = len(set.intersection(version_set, target_set)) / float(len(target_set))
+		ratio = len(set.intersection(version_set, target_set)) / float(len(target_set))
 		print "%s = %f" % (_hash_to_version(library, h), ratio)
 
 		if ratio > highest_ratio:
@@ -200,10 +259,46 @@ def _string_similarity(library, target_set):
 
 	return {"version": highest_version, "ratio": highest_ratio}
 
+def _function_similarity(library, target_set):
+	ret_ver = prev_ver = ver = library["base_version"]
+
+	while ver is not None:
+		ver_funcs = library["versions"][ver]["funcs_diff"]
+
+		# Check if within the string pool there's some with the version-specific functions.
+		# If not, return the previous version
+		if len(ver_funcs.intersection(target_set)) == 0:
+			ret_ver = prev_ver
+
+		# Remember the previous version to return as valid version
+		prev_ver = ver
+
+		# Advance to next version
+		ver = library["versions"][ver]["next"]
+
+	return ret_ver
+
 def identify(_db, proj, strs):
 	# String similarity
 	str_similarity = _string_similarity(_db[proj], set(strs))
+	func_similarity = _function_similarity(_db[proj], set(strs))
 
+	print "Function differential analysis version detected: %s" % (func_similarity)
+
+	visit_map = []
+	latest_version = None
+
+	# Find all the hashes that have
+	"""
+	for v in _db[proj]["versions"]:
+		for h in _db[proj]["versions"][v]:
+			symbols = _db[proj]["hashes"][h]["next"]["diff"]
+
+			visit_map.append(h)
+
+			if len(set(strs).intersection(symbols)) > 0:
+				latest_version = _hash_to_version(proj, h)
+	"""
 	return {"libname": proj, "version": str_similarity["version"], "ratio": str_similarity["ratio"]}
 
 
@@ -238,10 +333,16 @@ def similarity(filename):
 
 	return highest_result
 
-def learn(_db, proj, strings, version):
+def learn(_db, proj, strings, version, funcs):
 
 	s = hashlib.sha256()
 	s.update("".join(strings))
+
+	if funcs is not None:
+		s.update("".join(funcs))
+
+		funcs = set(funcs)
+
 	h = s.digest().encode("HEX")
 
 	print "Hashing %d strings" % len(strings)
@@ -249,14 +350,53 @@ def learn(_db, proj, strings, version):
 
 	s = set(strings)
 
-	print "Set size: %d" % len(s)
+	_db[proj]["hashes"][h] = {}
+	_db[proj]["hashes"][h]["strings"] = s
 
-	_db[proj]["hashes"][h] = s
+	if "versions_order" not in _db[proj]:
+		_db[proj]["versions_order"] = []
+
+	vlevel = _db[proj]["versions_order"]
 
 	if version not in _db[proj]["versions"].keys():
-		_db[proj]["versions"][version] = []
+		_db[proj]["versions"][version] = {
+							"hashes": [],
+							"next": None
+						}
 
-	_db[proj]["versions"][version].append(h)
+		if _db[proj]["base_version"] is None:
+			_db[proj]["base_version"] = version
+		else:
+			# If we're parsing the lowest version, replace base pointer
+			if vercmp(version, _db[proj]["base_version"]) < 0:
+				_db[proj]["versions"][version]["next"] = _db[proj]["base_version"]
+				_db[proj]["base_version"] = version
+
+				_db[proj]["versions"][version]["funcs_diff"] = funcs
+			else:
+				prev_ver = _db[proj]["base_version"]
+
+				# Find the previous version to link the new version to
+				while _db[proj]["versions"][prev_ver]["next"] is not None and vercmp(version, _db[proj]["versions"][prev_ver]["next"]) > 0:
+					prev_ver = _db[proj]["versions"][prev_ver]["next"]
+
+				# Link the version in the chain
+				_db[proj]["versions"][version]["next"] = _db[proj]["versions"][prev_ver]["next"]
+				_db[proj]["versions"][prev_ver]["next"] = version
+
+				# Calculate the functions differentiation between previous version and current one
+				_db[proj]["versions"][version]["funcs_diff"] = funcs - _version_functions(_db, proj, prev_ver)
+
+			# Calculate the diff against the next version
+			nextver = _db[proj]["versions"][version]["next"]
+
+			if nextver is not None:
+				_db[proj]["versions"][nextver]["funcs_diff"] =  _version_functions(_db, proj, nextver) - funcs
+
+	_db[proj]["versions"][version]["hashes"].append(h)
+
+	# Try to figure out which functions are new in this version
+	_db[proj]["hashes"][h]["functions"] = funcs
 
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description = "Inspect libraries and sources delivered by versions_download.py and create a rich database for binary similarity matching")
