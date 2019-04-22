@@ -1,11 +1,10 @@
 #!/usr/bin/python
 import code
-import redis
-from redisdb import *
+
+from pymongo import MongoClient
+import pydb
 
 if __name__ == "__main__":
-	conn = redis.Redis(host = "localhost", port = 6379)
-
-	db = redisdb(conn)
+	db = pydb.pydb(pydb.MongoConn(MongoClient("mongodb://localhost:27017/")))
 
 	code.interact(local = {"db": db})

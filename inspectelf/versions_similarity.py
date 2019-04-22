@@ -22,8 +22,8 @@ from cstrings import clang_parse
 import time
 from console_progressbar import ProgressBar
 
-import redis
-from redisdb import *
+from pymongo import MongoClient
+import pydb
 
 def versplit(v):
 	res = []
@@ -187,7 +187,8 @@ def _process_src(_db, proj, version, srcpath):
 	learn(_db, proj, strs, version, funcs)
 
 def build_db(root):
-	db = redisdb(redis.Redis(host = "localhost", port = 6379))
+	#db = redisdb(redis.Redis(host = "localhost", port = 6379))
+	db = pydb.pydb(pydb.MongoConn(MongoClient("mongodb://localhost:27017/")), cache = True)
 
 	# First directory heirarchy holds project names
 	for proj in os.listdir(root):
@@ -213,7 +214,10 @@ def _version_functions(_db, proj, version):
 	funcs = set()
 
 	for h in _db[proj]["versions"][version]["hashes"]:
-		funcs = funcs.union(_db[proj]["hashes"][h]["functions"])
+		try:
+			funcs = funcs.union(_db[proj]["hashes"][h]["functions"])
+		except:
+			continue
 
 	return funcs
 
