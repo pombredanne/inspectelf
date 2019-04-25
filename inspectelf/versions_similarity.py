@@ -307,7 +307,7 @@ def identify(_db, proj, strs):
 
 
 def similarity(filename):
-	db = redisdb(redis.Redis(host = "localhost", port = 6379))
+	db = pydb.pydb(pydb.MongoConn(MongoClient("mongodb://localhost:27017/")), cache = True)
 
 	libname = library_name(os.path.basename(filename))
 
