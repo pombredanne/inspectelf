@@ -222,9 +222,17 @@ def _version_functions(_db, proj, version):
 	return funcs
 
 def _hash_to_version(library, h):
+	# Try fast path
+	if "version" in library["hashes"][h]:
+		return library["hashes"][h]["version"]
+
+	# If for some weird reason there isn't one, try the slow one
 	for v in library["versions"]:
+		print "Checking for version %s" % v
 		for hv in library["versions"][v]["hashes"]:
 			if hv == h:
+				print "%s = %s" % (h, v)
+				library["hashes"]["version"] = v
 				return v
 
 	return None
@@ -307,7 +315,7 @@ def identify(_db, proj, strs):
 
 
 def similarity(filename):
-	db = redisdb(redis.Redis(host = "localhost", port = 6379))
+	db = pydb.pydb(pydb.MongoConn(MongoClient("mongodb://localhost:27017/")), cache = True)
 
 	libname = library_name(os.path.basename(filename))
 

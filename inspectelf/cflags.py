@@ -3,7 +3,6 @@
 import argparse
 import pprint
 import hashlib
-import Levenshtein
 import json
 from os import path, mkdir, listdir
 from elftools.elf.elffile import ELFFile

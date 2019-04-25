@@ -3,3 +3,4 @@ from cstrings import *
 from functrace import *
 from versions_download import *
 from versions_similarity import *
+from versions_cve import *
